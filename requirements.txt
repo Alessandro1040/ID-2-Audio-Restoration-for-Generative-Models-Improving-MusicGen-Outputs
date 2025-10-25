@@ -1,0 +1,29 @@
+# Core dependencies
+torch>=2.0.0
+torchaudio>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.0
+audiocraft>=1.0.0
+noisereduce>=3.0.0
+pedalboard>=0.7.0
+
+# Evaluation metrics
+pesq>=0.0.4
+pystoi>=0.3.3
+
+# Data handling and visualization
+pandas>=2.0.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Utilities
+tqdm>=4.65.0
+pyyaml>=6.0
+
+# Notebook support (optional)
+jupyter>=1.0.0
+ipykernel>=6.22.0
