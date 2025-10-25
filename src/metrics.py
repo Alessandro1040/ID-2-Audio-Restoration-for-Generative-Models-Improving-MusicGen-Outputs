@@ -3,7 +3,7 @@ Audio Quality Metrics for Evaluation
 
 Implements various objective metrics to assess audio quality improvements.
 
-Author: Alessandro Lo Curcio
+Author: Your Name
 Date: 2025
 """
 
@@ -302,4 +302,34 @@ class AudioQualityMetrics:
                 print(f"{metric_name:<30} {orig:>12.0f} {rest:>12.0f} "
                       f"{delta:>+12.0f} {indicator}")
             else:
-                print(f"{metric_name:<30} {orig:>12.
+                print(f"{metric_name:<30} {orig:>12.3f} {rest:>12.3f} "
+                      f"{delta:>+12.3f} {indicator}")
+        
+        print("="*70)
+
+
+def main():
+    """Example usage"""
+    metrics = AudioQualityMetrics(sample_rate=32000)
+    
+    # Single file evaluation
+    results = metrics.evaluate_file("generated_audio/sample_1.wav")
+    print("\nMetrics for sample_1.wav:")
+    for key, value in results.items():
+        print(f"  {key}: {value:.3f}")
+    
+    # Compare original vs restored
+    print("\n" + "="*70)
+    print("COMPARISON: Original vs Restored")
+    print("="*70)
+    
+    orig, rest, improvements = metrics.compare_files(
+        original_path="generated_audio/sample_1.wav",
+        restored_path="restored_audio/restored_sample_1.wav"
+    )
+    
+    metrics.print_comparison(orig, rest, improvements)
+
+
+if __name__ == "__main__":
+    main()
