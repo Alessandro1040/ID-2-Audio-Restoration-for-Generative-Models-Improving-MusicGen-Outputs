@@ -1,10 +1,9 @@
+#!/usr/bin/env python3
 """
-Batch audio restoration script
-
-Applies restoration pipeline to all audio files in a directory.
+Apply restoration pipeline to audio files
 
 Usage:
-    python scripts/restore_audio.py --input_dir generated_audio --output_dir restored_audio
+    python scripts/restore_audio.py --input_dir results/audio_samples/original --output_dir results/audio_samples/restored
 """
 
 import argparse
@@ -14,152 +13,54 @@ from pathlib import Path
 from tqdm import tqdm
 
 # Add src to path
-sys.path.append(str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.restoration import AudioRestorer
 
-
-def restore_batch(
-    input_dir: str,
-    output_dir: str,
-    denoise_method: str = 'spectral',
-    noise_reduction: float = 0.8,
-    sample_rate: int = 32000,
-    file_pattern: str = "*.wav"
-):
-    """
-    Restore all audio files in input directory
+def main():
+    parser = argparse.ArgumentParser(description="Batch audio restoration")
+    parser.add_argument('--input_dir', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, required=True)
+    parser.add_argument('--sample_rate', type=int, default=32000)
+    args = parser.parse_args()
     
-    Args:
-        input_dir: Directory containing audio files to restore
-        output_dir: Directory to save restored files
-        denoise_method: Denoising method ('spectral' or 'wiener')
-        noise_reduction: Noise reduction strength (0-1)
-        sample_rate: Target sample rate
-        file_pattern: Glob pattern for audio files
-    """
     # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
     
-    # Find all audio files
-    input_path = Path(input_dir)
-    audio_files = sorted(input_path.glob(file_pattern))
+    # Find audio files
+    input_path = Path(args.input_dir)
+    audio_files = sorted(input_path.glob("*.wav"))
     
     if not audio_files:
-        print(f"❌ No audio files found in {input_dir}")
+        print(f"❌ No audio files found in {args.input_dir}")
         return
     
     print("=" * 70)
     print(f"BATCH AUDIO RESTORATION")
     print("=" * 70)
-    print(f"Input directory: {input_dir}")
-    print(f"Output directory: {output_dir}")
-    print(f"Found {len(audio_files)} files")
-    print(f"Denoise method: {denoise_method}")
-    print(f"Noise reduction: {noise_reduction}")
-    print("=" * 70)
+    print(f"Input: {args.input_dir}")
+    print(f"Output: {args.output_dir}")
+    print(f"Files: {len(audio_files)}")
+    print("=" * 70 + "\n")
     
     # Initialize restorer
-    restorer = AudioRestorer(sample_rate=sample_rate, verbose=False)
+    restorer = AudioRestorer(sample_rate=args.sample_rate, verbose=False)
     
-    # Process each file
+    # Process files
     successful = 0
-    failed = 0
-    
-    for audio_file in tqdm(audio_files, desc="Restoring audio"):
+    for audio_file in tqdm(audio_files, desc="Restoring"):
         try:
-            # Generate output filename
             output_filename = f"restored_{audio_file.name}"
-            output_path = os.path.join(output_dir, output_filename)
+            output_path = os.path.join(args.output_dir, output_filename)
             
-            # Restore audio
-            restorer.restore(
-                input_path=str(audio_file),
-                output_path=output_path,
-                denoise_method=denoise_method,
-                noise_reduction=noise_reduction
-            )
-            
+            restorer.restore(str(audio_file), output_path)
             successful += 1
             
         except Exception as e:
-            print(f"\n❌ Error processing {audio_file.name}: {e}")
-            failed += 1
+            print(f"\n❌ Error: {audio_file.name}: {e}")
     
-    # Summary
     print("\n" + "=" * 70)
-    print("RESTORATION COMPLETE")
+    print(f"✅ Restoration complete: {successful}/{len(audio_files)} successful")
     print("=" * 70)
-    print(f"✅ Successful: {successful}/{len(audio_files)}")
-    if failed > 0:
-        print(f"❌ Failed: {failed}/{len(audio_files)}")
-    print(f"\nRestored files saved in: {output_dir}/")
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Batch audio restoration using multi-stage pipeline"
-    )
-    
-    parser.add_argument(
-        '--input_dir',
-        type=str,
-        required=True,
-        help='Directory containing audio files to restore'
-    )
-    
-    parser.add_argument(
-        '--output_dir',
-        type=str,
-        required=True,
-        help='Directory to save restored audio files'
-    )
-    
-    parser.add_argument(
-        '--denoise_method',
-        type=str,
-        default='spectral',
-        choices=['spectral', 'wiener'],
-        help='Denoising method (default: spectral)'
-    )
-    
-    parser.add_argument(
-        '--noise_reduction',
-        type=float,
-        default=0.8,
-        help='Noise reduction strength 0-1 (default: 0.8)'
-    )
-    
-    parser.add_argument(
-        '--sample_rate',
-        type=int,
-        default=32000,
-        help='Target sample rate in Hz (default: 32000)'
-    )
-    
-    parser.add_argument(
-        '--file_pattern',
-        type=str,
-        default='*.wav',
-        help='Glob pattern for audio files (default: *.wav)'
-    )
-    
-    args = parser.parse_args()
-    
-    # Validate input directory
-    if not os.path.exists(args.input_dir):
-        print(f"❌ Input directory not found: {args.input_dir}")
-        sys.exit(1)
-    
-    # Run batch restoration
-    restore_batch(
-        input_dir=args.input_dir,
-        output_dir=args.output_dir,
-        denoise_method=args.denoise_method,
-        noise_reduction=args.noise_reduction,
-        sample_rate=args.sample_rate,
-        file_pattern=args.file_pattern
-    )
-
 
 if __name__ == "__main__":
     main()
