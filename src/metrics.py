@@ -3,7 +3,7 @@ Audio Quality Metrics for Evaluation
 
 Implements various objective metrics to assess audio quality improvements.
 
-Author: Your Name
+Author: Alessandro Lo Curcio
 Date: 2025
 """
 
