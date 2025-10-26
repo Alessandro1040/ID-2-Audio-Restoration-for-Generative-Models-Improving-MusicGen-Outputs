@@ -28,6 +28,7 @@ Results demonstrate qualitative improvements in clarity, frequency content, and 
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Alessandro1040/ID-2-Audio-Restoration-for-Generative-Models-Improving-MusicGen-Outputs/blob/main/notebooks/audio_restoration_complete.ipynb)
 
+**Note**: The notebook will generate synthetic test audio and apply the restoration pipeline. Expected runtime: ~5 minutes on Colab (with GPU enabled).
 Click the badge above to run the complete pipeline in your browser (no installation required).
 
 ### Local Installation
