@@ -1,0 +1,83 @@
+gitignore_content = """
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Virtual environments ---
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# --- Jupyter Notebook ---
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# --- Audio files  ---
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aiff
+
+# !examples/*.wav
+
+# --- OS files ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- IDE settings ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Logs and databases ---
+*.log
+*.sql
+*.sqlite
+
+# --- Model checkpoints  ---
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+weights/
+
+# --- Results and outputs ---
+results/
+outputs/
+temp/
+tmp/
+"""
+
+# Creazione del file
+with open(".gitignore", "w") as f:
+    f.write(gitignore_content.strip())
+
+print("✅ File .gitignore creato con successo!")
