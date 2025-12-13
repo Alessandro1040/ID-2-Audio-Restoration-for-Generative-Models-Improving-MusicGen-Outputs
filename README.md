@@ -47,3 +47,347 @@ Click the badge below to open the notebook in Google Colab:
 
 ### Option 2: Local Installation
 ```bash
+# Clone the repository
+git clone https://github.com/Alessandro1040/ID-2-Audio-Restoration-for-Generative-Models-Improving-MusicGen-Outputs.git
+cd ID-2-Audio-Restoration-for-Generative-Models-Improving-MusicGen-Outputs
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the notebook
+jupyter notebook audio_restoration.ipynb
+```
+
+---
+
+## 🔧 Usage
+
+### Basic Usage
+```python
+from audio_restorer import AggressiveAudioRestorer
+
+# Initialize the restorer
+restorer = AggressiveAudioRestorer(sample_rate=44100, verbose=True)
+
+# Restore an audio file
+restorer.restore('input.wav', 'output_restored.wav')
+```
+
+### Advanced Usage
+```python
+import librosa
+import soundfile as sf
+
+# Load audio
+audio, sr = librosa.load('input.wav', sr=44100, mono=True)
+
+# Apply individual stages
+audio = restorer.aggressive_denoise(audio)
+audio = restorer.declip(audio)
+audio = restorer.adaptive_filtering(audio)
+audio = restorer.spectral_subtraction(audio)
+audio = restorer.enhance_clarity(audio)
+audio = restorer.final_polish(audio)
+
+# Save result
+sf.write('output.wav', audio, sr)
+```
+
+---
+
+## 📊 Pipeline Architecture
+```
+┌─────────────────┐
+│   Input Audio   │
+│   (Low Quality) │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Stage 1: Targeted Denoising        │
+│  - STFT analysis (200-4000 Hz)      │
+│  - Voice artifact detection         │
+│  - Median filtering                 │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Stage 2: De-clipping               │
+│  - Detect clipped samples           │
+│  - Interpolate from clean samples   │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Stage 3: Adaptive Filtering        │
+│  - Spectral analysis                │
+│  - Frequency-selective removal      │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Stage 4: Spectral Subtraction      │
+│  - Noise profile estimation         │
+│  - Aggressive oversubtraction       │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Stage 5: Clarity Enhancement       │
+│  - Multi-band EQ                    │
+│  - Sub-bass: 0.2x (20-60 Hz)        │
+│  - Bass: 0.5x (60-250 Hz)           │
+│  - Mids: 1.5x (250-4000 Hz)         │
+│  - Highs: 1.8x (4000-16000 Hz)      │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────┐
+│  Stage 6: Final Polish              │
+│  - Soft clipping (tanh)             │
+│  - Peak normalization (-0.5 dB)     │
+│  - Triangular dithering             │
+└────────┬────────────────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Output Audio   │
+│ (Enhanced/Clean)│
+└─────────────────┘
+```
+
+---
+
+## 📈 Results
+
+### Qualitative Improvements
+
+- ✅ **Noise Floor Reduction**: Significant decrease in background noise
+- ✅ **Enhanced Clarity**: Improved frequency definition across all bands
+- ✅ **Better Dynamic Range**: More natural transitions between quiet and loud sections
+- ✅ **Artifact Removal**: Vocal interference and quantization noise eliminated
+
+### Example Outputs
+
+The `examples/` directory contains audio samples demonstrating:
+- Original noisy/low-quality audio
+- Restored high-quality output
+- Spectrogram comparisons
+
+---
+
+## 🛠️ Technical Details
+
+### Processing Specifications
+
+| Parameter | Value |
+|-----------|-------|
+| Sample Rate | 44,100 Hz |
+| Bit Depth | 24-bit (output) |
+| STFT Window | 2048 samples |
+| Hop Length | 512 samples |
+| Voice Band | 200-4000 Hz |
+| Output Format | WAV (PCM_24) |
+
+### Multi-Band EQ Weights
+
+| Band | Frequency Range | Weight |
+|------|----------------|--------|
+| Sub-bass | 20-60 Hz | 0.2× |
+| Bass | 60-250 Hz | 0.5× |
+| Mids | 250-4000 Hz | 1.5× |
+| Highs | 4000-16000 Hz | 1.8× |
+
+---
+
+## 📁 Project Structure
+```
+ID-2-Audio-Restoration/
+├── audio_restoration.ipynb      # Main Colab notebook
+├── README.md                    # This file
+├── requirements.txt             # Python dependencies
+├── LICENSE                      # MIT License
+├── examples/                    # Audio examples (if included)
+│   ├── original/
+│   └── restored/
+└── docs/                        # Documentation (optional)
+    └── pipeline_details.md
+```
+
+---
+
+## 🎓 Academic Context
+
+This project was developed as part of the **Machine Learning course (2024/2025)** at Sapienza University of Rome, under the supervision of Prof. Emanuele Rodolà.
+
+**Project Objectives:**
+- Design and implement a post-processing pipeline for generative audio models
+- Enhance perceptual and technical audio quality without modifying semantic content
+- Explore zero-shot audio restoration techniques using signal processing and ML
+
+---
+
+## 📚 References
+
+### Key Libraries Used
+
+- **librosa**: Audio analysis and feature extraction
+- **noisereduce**: Spectral noise reduction
+- **scipy**: Signal processing and filtering
+- **soundfile**: Audio I/O operations
+- **yt-dlp**: YouTube audio extraction
+
+### Related Work
+
+- MusicGen: Simple and Controllable Music Generation (Meta AI, 2023)
+- Audio Super-Resolution using Neural Networks (Kuleshov et al., 2017)
+- Deep Learning for Audio Signal Processing (Purwins et al., 2019)
+
+---
+
+## 🤝 Contributing
+
+This is an academic project, but suggestions and improvements are welcome! Feel free to:
+
+1. Open an issue for bugs or feature requests
+2. Fork the repository and submit pull requests
+3. Share your restored audio examples
+
+---
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 📧 Contact
+
+**Alessandro Lo Curcio**  
+Machine Learning 2024/2025  
+Sapienza University of Rome
+
+For questions or feedback about this project, please open an issue on GitHub.
+
+---
+
+## 🙏 Acknowledgments
+
+- Prof. Emanuele Rodolà for course instruction and project guidance
+- Meta AI Research for the MusicGen model that inspired this work
+- The open-source audio processing community for excellent libraries
+
+---
+
+<div align="center">
+
+Made for the ML course @ Sapienza
+
+</div>
+```
+
+---
+
+## 3️⃣ `LICENSE`
+```
+MIT License
+
+Copyright (c) 2025 Alessandro Lo Curcio
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+---
+
+## 4️⃣ `.gitignore`
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Audio files (if large)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aiff
+!examples/small_sample.wav
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+
+# Model checkpoints (if applicable)
+*.pt
+*.pth
+*.ckpt
+checkpoints/
+weights/
+
+# Results and outputs
+results/
+outputs/
+temp/
+tmp/
