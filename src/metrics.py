@@ -39,32 +39,39 @@ class AudioQualityMetrics:
     
     def compute_snr(self, audio: np.ndarray) -> float:
         """
-        Compute Signal-to-Noise Ratio in dB
-        
-        Higher values indicate better quality (less noise)
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            SNR in decibels
+        Compute Signal-to-Noise Ratio in dB (FIXED)
         """
         # Signal power
         signal_power = np.mean(audio ** 2)
         
         # Estimate noise from quietest segments
-        rms = librosa.feature.rms(y=audio)[0]
+        # FIX: usa hop_length per allineare le dimensioni
+        hop_length = 512
+        rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
+        
+        # Trova le frame più silenziose
         noise_threshold = np.percentile(rms, 10)
-        noise_frames = audio[rms < noise_threshold]
         
-        if len(noise_frames) > 0:
-            noise_power = np.mean(noise_frames ** 2)
+        # FIX: espandi la maschera per matchare audio length
+        frame_indices = np.where(rms < noise_threshold)[0]
+        
+        if len(frame_indices) > 0:
+            # Converti frame indices a sample indices
+            noise_samples = []
+            for frame_idx in frame_indices:
+                start = frame_idx * hop_length
+                end = min(start + hop_length, len(audio))
+                noise_samples.extend(audio[start:end])
+            
+            noise_samples = np.array(noise_samples)
+            noise_power = np.mean(noise_samples ** 2)
         else:
-            noise_power = 1e-10
-        
+            # Fallback: usa deviazione standard come stima del rumore
+            noise_power = np.var(audio) * 0.1
+    
         # Compute SNR
         snr = 10 * np.log10(signal_power / (noise_power + 1e-10))
-        
+    
         return float(snr)
     
     def compute_spectral_flatness(self, audio: np.ndarray) -> float:
