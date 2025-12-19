@@ -170,13 +170,30 @@ This project addresses the challenge of improving perceptual quality in generati
 ---
 
 ## 📁 Repository Structure
-```
+
+The project is organized as follows to ensure modularity and reproducibility:
+
+```text
 ID-2-Audio-Restoration/
-├── audio_restoration.ipynb    # Main notebook (run this!)
-├── README.md                  # This file
-├── requirements.txt           # Python dependencies
-└── .gitignore                 # Git ignore rules
-```
+│
+├── 📘 audio_restoration.ipynb          # Main Colab notebook for quick testing
+├── 📄 requirements.txt                 # Python dependencies (librosa, noisereduce, etc.)
+├── 📄 LICENSE                          # MIT License
+├── 📄 .gitignore                       # Rules for files to exclude from Git
+│
+├── 📁 src/                             # Core Python source code
+│   ├── metrics.py                      # AudioQualityMetrics class (SNR, THD, Bandwidth)
+│   └── restoration.py                  # AudioRestorer class (Multi-stage pipeline)
+│
+├── 📁 scripts/                         # Standalone execution scripts
+│   ├── evaluate.py                     # Batch quality evaluation script
+│   └── batch_restore.py                # Batch processing for entire folders
+│
+├── 📁 results/                         # Output data and visualizations
+│   ├── metrics/                        # CSV files with numerical results
+│   └── plots/                          # Spectrograms and improvement charts
+│
+└── 📁 notebooks/                       # Experimental notebooks and development logs
 
 ---
 
