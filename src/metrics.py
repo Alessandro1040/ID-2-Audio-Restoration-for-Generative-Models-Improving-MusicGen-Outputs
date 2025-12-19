@@ -25,6 +25,8 @@ class AudioQualityMetrics:
         - Spectral Rolloff
         - Dynamic Range
         - Total Harmonic Distortion (THD)
+        - Spectral Centroid
+        - Zero Crossing Rate
     
     Args:
         sample_rate (int): Audio sample rate in Hz
@@ -39,24 +41,31 @@ class AudioQualityMetrics:
     
     def compute_snr(self, audio: np.ndarray) -> float:
         """
-        Compute Signal-to-Noise Ratio in dB (FIXED)
+        Compute Signal-to-Noise Ratio in dB
+        
+        Higher values indicate better quality (less noise)
+        
+        Args:
+            audio: Input audio signal
+        
+        Returns:
+            SNR in decibels
         """
         # Signal power
         signal_power = np.mean(audio ** 2)
         
         # Estimate noise from quietest segments
-        # FIX: usa hop_length per allineare le dimensioni
         hop_length = 512
         rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
         
-        # Trova le frame più silenziose
+        # Find the quietest frames
         noise_threshold = np.percentile(rms, 10)
         
-        # FIX: espandi la maschera per matchare audio length
+        # Convert frame indices to sample indices
         frame_indices = np.where(rms < noise_threshold)[0]
         
         if len(frame_indices) > 0:
-            # Converti frame indices a sample indices
+            # Extract noise samples from quiet frames
             noise_samples = []
             for frame_idx in frame_indices:
                 start = frame_idx * hop_length
@@ -66,12 +75,12 @@ class AudioQualityMetrics:
             noise_samples = np.array(noise_samples)
             noise_power = np.mean(noise_samples ** 2)
         else:
-            # Fallback: usa deviazione standard come stima del rumore
+            # Fallback: estimate noise from signal variance
             noise_power = np.var(audio) * 0.1
-    
+        
         # Compute SNR
         snr = 10 * np.log10(signal_power / (noise_power + 1e-10))
-    
+        
         return float(snr)
     
     def compute_spectral_flatness(self, audio: np.ndarray) -> float:
@@ -161,7 +170,6 @@ class AudioQualityMetrics:
         # FFT
         fft = np.fft.rfft(audio)
         magnitude = np.abs(fft)
-        freqs = np.fft.rfftfreq(len(audio), 1/self.sr)
         
         # Find fundamental frequency (skip DC component)
         fundamental_idx = np.argmax(magnitude[10:]) + 10
