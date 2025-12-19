@@ -33,54 +33,48 @@ class AudioQualityMetrics:
     
     Example:
         >>> metrics = AudioQualityMetrics(sample_rate=32000)
-        >>> results = metrics.compute_all(audio_signal)
+        >>> results = metrics._all(audio_signal)
     """
     
     def __init__(self, sample_rate: int = 32000):
         self.sr = sample_rate
     
-    def compute_snr(self, audio: np.ndarray) -> float:
+    def compute_snr(self, original: np.ndarray, restored: np.ndarray) -> float:
         """
-        Compute Signal-to-Noise Ratio in dB
-        
-        Higher values indicate better quality (less noise)
+        Compute the Signal-to-Noise Ratio (SNR) between original and restored audio.
+        Uses energy alignment to avoid volume bias in the measurement.
         
         Args:
-            audio: Input audio signal
-        
-        Returns:
-            SNR in decibels
-        """
-        # Signal power
-        signal_power = np.mean(audio ** 2)
-        
-        # Estimate noise from quietest segments
-        hop_length = 512
-        rms = librosa.feature.rms(y=audio, hop_length=hop_length)[0]
-        
-        # Find the quietest frames
-        noise_threshold = np.percentile(rms, 10)
-        
-        # Convert frame indices to sample indices
-        frame_indices = np.where(rms < noise_threshold)[0]
-        
-        if len(frame_indices) > 0:
-            # Extract noise samples from quiet frames
-            noise_samples = []
-            for frame_idx in frame_indices:
-                start = frame_idx * hop_length
-                end = min(start + hop_length, len(audio))
-                noise_samples.extend(audio[start:end])
+            original: Reference/Original audio signal.
+            restored: Processed/Restored audio signal.
             
-            noise_samples = np.array(noise_samples)
-            noise_power = np.mean(noise_samples ** 2)
-        else:
-            # Fallback: estimate noise from signal variance
-            noise_power = np.var(audio) * 0.1
+        Returns:
+            SNR value in decibels (dB).
+        """
+        # Ensure signals have the same length
+        target_len = min(len(original), len(restored))
+        original = original[:target_len]
+        restored = restored[:target_len]
         
-        # Compute SNR
-        snr = 10 * np.log10(signal_power / (noise_power + 1e-10))
+        # Energy normalization for noise computation
+        original_rms = np.sqrt(np.mean(original**2))
+        restored_rms = np.sqrt(np.mean(restored**2))
         
+        if restored_rms == 0: 
+            return 0.0
+        
+        # Scale restored signal to match original energy levels before computing noise
+        restored_scaled = restored * (original_rms / restored_rms)
+        noise = original - restored_scaled
+        
+        signal_power = np.mean(original**2)
+        noise_power = np.mean(noise**2)
+        
+        # Handle identical signals or near-zero noise to avoid division by zero
+        if noise_power < 1e-10: 
+            return 100.0
+        
+        snr = 10 * np.log10(signal_power / noise_power)
         return float(snr)
     
     def compute_spectral_flatness(self, audio: np.ndarray) -> float:
