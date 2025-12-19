@@ -194,7 +194,8 @@ ID-2-Audio-Restoration/
 │   └── plots/                          # Spectrograms and improvement charts
 │
 └── 📁 notebooks/                       # Experimental notebooks and development logs
-'''
+```
+
 ---
 
 ## 🤝 Contributing
