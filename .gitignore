@@ -38,6 +38,7 @@ results/
 outputs/
 temp/
 *.log
+webdemo/jobs/
 
 # Perché: Modelli grandi (>100MB)
 *.pt

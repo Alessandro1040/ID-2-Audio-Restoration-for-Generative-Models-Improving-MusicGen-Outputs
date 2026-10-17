@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Restoration · Demo zero-shot</title>
+<meta name="description" content="Carica un file audio generato o degradato e ascolta la versione ripulita. Pipeline zero-shot, senza riferimento pulito.">
+<link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,500;1,300;1,500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/" aria-label="Audio Restoration home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <path d="M4 17v-2M8 20V12M12 24V8M16 21V11M20 26V6M24 19V13M28 16v0"/>
+        </svg>
+      </span>
+      <span class="brand-text"><strong>Audio Restoration</strong><small>zero-shot · MusicGen</small></span>
+    </a>
+    <nav class="nav" aria-label="Navigazione principale">
+      <a href="#studio">Demo</a>
+      <a href="#come-funziona">Come funziona</a>
+      <a href="#metriche">Metriche</a>
+    </nav>
+    <a class="btn btn--small btn--ghost header-github" href="{{ github_url }}" target="_blank" rel="noopener">
+      GitHub <span aria-hidden="true">↗</span>
+    </a>
+  </div>
+</header>
+
+<main>
+<section class="hero">
+  <div class="hero-glow" aria-hidden="true"></div>
+  <div class="wrap hero-grid">
+    <div class="hero-copy">
+      <p class="eyebrow">ZERO-SHOT · REFERENCE-FREE</p>
+      <h1>Ripulisci l'audio.<br><em>Tieni la musica.</em></h1>
+      <p class="lead">
+        Carica un file generato da MusicGen, una registrazione rumorosa o un mix.
+        La pipeline stima il rumore, protegge i transienti e restituisce una
+        versione più pulita <strong>senza bisogno di un riferimento pulito</strong>.
+      </p>
+      <div class="hero-actions">
+        <a class="btn btn--solid" href="#studio">Carica un file <span aria-hidden="true">↓</span></a>
+        <button class="btn" type="button" data-load-sample>Prova l'esempio</button>
+      </div>
+      <dl class="hero-stats">
+        <div><dt>+5,06 dB</dt><dd>SI-SDR sul demo sintetico</dd></div>
+        <div><dt>−7,13 dB</dt><dd>LSD, meno distanza spettrale</dd></div>
+        <div><dt>32 kHz</dt><dd>sample rate preservato</dd></div>
+      </dl>
+    </div>
+
+    <aside class="sample-card" aria-label="File di esempio">
+      <div class="sample-card__top">
+        <span class="eyebrow">ESEMPIO INCLUSO</span>
+        <span class="badge">WAV · 12 s</span>
+      </div>
+      <div class="waveform" aria-hidden="true">
+        <span style="--h:32%"></span><span style="--h:58%"></span><span style="--h:44%"></span>
+        <span style="--h:76%"></span><span style="--h:91%"></span><span style="--h:63%"></span>
+        <span style="--h:38%"></span><span style="--h:54%"></span><span style="--h:82%"></span>
+        <span style="--h:100%"></span><span style="--h:72%"></span><span style="--h:48%"></span>
+        <span style="--h:66%"></span><span style="--h:88%"></span><span style="--h:57%"></span>
+        <span style="--h:36%"></span><span style="--h:70%"></span><span style="--h:94%"></span>
+        <span style="--h:79%"></span><span style="--h:52%"></span><span style="--h:41%"></span>
+        <span style="--h:68%"></span><span style="--h:85%"></span><span style="--h:45%"></span>
+        <span style="--h:60%"></span><span style="--h:30%"></span>
+      </div>
+      <h2>Un mix degradato</h2>
+      <p class="sample-card__sub">
+        Hiss a 12 dB SNR, quantizzazione a 8 bit, banda limitata a 8 kHz e
+        clipping. Il pezzo è sintetico: nessun copyright, solo segnale.
+      </p>
+      {% if sample_available %}
+      <audio controls preload="none" src="{{ url_for('example_file', filename=sample_name) }}" data-sample-audio></audio>
+      {% else %}
+      <p class="notice">File di esempio non trovato. Esegui <code>python scripts/make_demo.py</code>.</p>
+      {% endif %}
+      <button class="sample-card__cta" type="button" data-load-sample>
+        Usa questo esempio <span aria-hidden="true">→</span>
+      </button>
+    </aside>
+  </div>
+</section>
+
+<section class="section studio-section" id="studio">
+  <div class="wrap">
+    <div class="section-heading">
+      <p class="eyebrow">LA PROVA</p>
+      <h2>La tua traccia, ripulita.</h2>
+      <p class="section-sub">
+        Carica qualsiasi file audio. Il risultato è un WAV alla stessa sample rate
+        e con lo stesso numero di canali dell'originale, pronto da ascoltare e scaricare.
+      </p>
+    </div>
+
+    <div class="studio-grid">
+      <div class="upload-panel">
+        <form id="upload-form" novalidate>
+          <label class="dropzone" id="dropzone" for="file-input">
+            <span class="dropzone__icon" aria-hidden="true">
+              <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M24 31V9m0 0-8 8m8-8 8 8"/>
+                <path d="M9 29v7a3 3 0 0 0 3 3h24a3 3 0 0 0 3-3v-7"/>
+              </svg>
+            </span>
+            <span class="dropzone__title" id="drop-title">Trascina un file audio qui</span>
+            <span class="dropzone__hint">oppure clicca per sceglierlo</span>
+            <span class="dropzone__formats">WAV · MP3 · FLAC · OGG · M4A · AIFF · OPUS · max {{ max_upload_mb }} MB</span>
+            <input id="file-input" type="file" name="audio" accept="audio/*,.wav,.mp3,.flac,.ogg,.m4a,.aac,.aiff,.aif,.opus,.wma,.mp4,.webm" hidden>
+          </label>
+
+          <div class="file-row" id="file-row" hidden>
+            <span class="file-row__status" aria-hidden="true"></span>
+            <span class="file-row__name" id="file-name"></span>
+            <span class="file-row__size" id="file-size"></span>
+            <button class="file-row__remove" id="remove-file" type="button" aria-label="Rimuovi file">×</button>
+          </div>
+
+          <fieldset class="preset-field">
+            <legend>Modalità</legend>
+            <div class="preset-grid">
+              {% for value, label in presets.items() %}
+              <label class="preset-option">
+                <input type="radio" name="preset" value="{{ value }}" {% if value == 'music' %}checked{% endif %}>
+                <span>{{ label }}</span>
+              </label>
+              {% endfor %}
+            </div>
+          </fieldset>
+
+          <button class="btn btn--solid btn--full restore-button" id="restore-button" type="submit">
+            <span class="button-label">Ripulisci audio</span>
+            <span class="button-loader" aria-hidden="true"></span>
+          </button>
+          <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+
+      <aside class="method-panel">
+        <p class="eyebrow">COSA SUCCEDE</p>
+        <h3>Un passaggio, quattro idee.</h3>
+        <ol class="method-list">
+          <li><span>01</span><div><strong>Stima il rumore.</strong> Ogni bin di frequenza guarda i frame più silenziosi: il rumore non viene confuso con la musica.</div></li>
+          <li><span>02</span><div><strong>Protegge gli attacchi.</strong> I transienti alzano temporaneamente il gain, così batteria e pianoforte restano definiti.</div></li>
+          <li><span>03</span><div><strong>Non inventa.</strong> È un post-processor conservativo: non ricostruisce frequenze mancanti né cambia il contenuto musicale.</div></li>
+          <li><span>04</span><div><strong>Misura.</strong> Prima e dopo vengono confrontati con descrittori reference-free, non con un riferimento che non esiste.</div></li>
+        </ol>
+        <div class="method-note">
+          <span class="method-note__dot" aria-hidden="true"></span>
+          <p>Nessun upload viene inviato a servizi esterni: l'audio resta su questo computer.</p>
+        </div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+
+<section class="section result-section" id="result" hidden aria-live="polite">
+  <div class="wrap">
+    <div class="section-heading section-heading--left">
+      <p class="eyebrow">IL RISULTATO</p>
+      <h2>Ascolta la differenza.</h2>
+    </div>
+    <div class="result-bar">
+      <div class="result-file">
+        <span class="result-file__dot" aria-hidden="true"></span>
+        <span id="result-filename">—</span>
+        <span class="result-file__meta" id="result-meta"></span>
+      </div>
+      <a class="btn btn--small" id="download-link" href="#" download>Scarica il WAV <span aria-hidden="true">↓</span></a>
+    </div>
+
+    <div class="compare-grid">
+      <article class="audio-card">
+        <div class="audio-card__head">
+          <span class="eyebrow">PRIMA</span>
+          <span class="badge badge--muted">input</span>
+        </div>
+        <h3 id="before-name">File originale</h3>
+        <audio id="before-audio" controls preload="metadata"></audio>
+        <p class="audio-card__caption">Il file che hai caricato, convertito in WAV per la riproduzione nel browser.</p>
+      </article>
+      <article class="audio-card audio-card--accent">
+        <div class="audio-card__head">
+          <span class="eyebrow">DOPO</span>
+          <span class="badge">restored</span>
+        </div>
+        <h3 id="after-name">Versione ripulita</h3>
+        <audio id="after-audio" controls preload="metadata"></audio>
+        <p class="audio-card__caption">Stessa sample rate e stesso layout di canali dell'input, 24-bit WAV.</p>
+      </article>
+    </div>
+
+    <div class="metrics-heading">
+      <div>
+        <p class="eyebrow">MISURE REFERENCE-FREE</p>
+        <h3>Cosa è cambiato</h3>
+      </div>
+      <span class="metrics-time" id="metrics-time"></span>
+    </div>
+    <div class="metrics-grid" id="metrics-grid"></div>
+    <p class="metrics-note">
+      Queste misure non richiedono un riferimento pulito. SI-SDR, SNR e LSD non
+      sono mostrati perché richiedono il segnale clean originale.
+    </p>
+
+    <div class="tech-strip">
+      <div><span>Sample rate</span><strong id="meta-sr">—</strong></div>
+      <div><span>Canali</span><strong id="meta-channels">—</strong></div>
+      <div><span>Durata</span><strong id="meta-duration">—</strong></div>
+      <div><span>Elaborazione</span><strong id="meta-elapsed">—</strong></div>
+    </div>
+
+    <details class="report-details">
+      <summary>Dettagli tecnici del passaggio <span aria-hidden="true">+</span></summary>
+      <div class="stage-chips" id="stage-chips"></div>
+      <pre id="report-json"></pre>
+    </details>
+  </div>
+</section>
+
+
+<section class="section how-section" id="come-funziona">
+  <div class="wrap">
+    <div class="section-heading">
+      <p class="eyebrow">DIETRO LE QUINTE</p>
+      <h2>Rumore giù, musica su.</h2>
+      <p class="section-sub">
+        La pipeline lavora nel dominio STFT. La maschera è stimata una volta per
+        tutti i canali e applicata a ciascuno, così l'immagine stereo resta coerente.
+      </p>
+    </div>
+    <div class="how-grid">
+      <article class="how-card">
+        <span class="how-card__num">01</span>
+        <h3>Wiener guidato</h3>
+        <p>Un filtro decision-directed stima il rumore per bin e applica un gain con un floor più profondo sopra 1 kHz, dove il hiss è più fastidioso.</p>
+      </article>
+      <article class="how-card">
+        <span class="how-card__num">02</span>
+        <h3>Transienti protetti</h3>
+        <p>Gli onset spettrali alzano temporaneamente il gain. Il denoiser non deve trasformare un rullante in un sibilo.</p>
+      </article>
+      <article class="how-card">
+        <span class="how-card__num">03</span>
+        <h3>Formato preservato</h3>
+        <p>La sample rate e i canali dell'input restano quelli di partenza. Un limiter a −1 dBTP evita il clipping digitale in uscita.</p>
+      </article>
+    </div>
+
+    <figure class="spectrogram">
+      <img src="{{ url_for('docs_file', filename='spectrograms_comparison.png') }}" alt="Spettrogrammi del file clean, degradato e restaurato" loading="lazy">
+      <figcaption>Clean, degradato e restaurato: la nebbia a banda larga scende, le armoniche e i colpi di percussione restano visibili.</figcaption>
+    </figure>
+
+    <div class="limits" id="metriche">
+      <div>
+        <p class="eyebrow">ONESTÀ INTELLETTUALE</p>
+        <h3>Cosa questa demo non fa.</h3>
+      </div>
+      <p>
+        Non è un modello neurale di bandwidth extension e non ricrea frequenze
+        mancanti. Non è un remastering automatico e non promette che ogni file
+        migliori: su materiale già pulito il preset <em>gentle</em> è la scelta
+        più sicura. La valutazione completa con riferimento pulito è in
+        <code>scripts/evaluate.py</code>.
+      </p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <div class="footer-brand">
+      <span class="brand-mark brand-mark--small" aria-hidden="true">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <path d="M4 17v-2M8 20V12M12 24V8M16 21V11M20 26V6M24 19V13M28 16v0"/>
+        </svg>
+      </span>
+      <div><strong>Audio Restoration</strong><span>Machine Learning 2024/2025 · Sapienza University of Rome</span></div>
+    </div>
+    <div class="footer-links">
+      <a href="{{ github_url }}" target="_blank" rel="noopener">Repository ↗</a>
+      <span>v2.0.0</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -55,6 +55,23 @@ pip install -r requirements.txt
 `requirements-optional.txt` for PESQ/STOI and the MusicGen/download helpers; the
 evaluation CLI automatically omits PESQ and STOI when they are not installed.
 
+### Web demo
+
+```bash
+pip install -r requirements-web.txt   # adds Flask, only needed for the site
+python app.py
+```
+
+Open **http://127.0.0.1:7865/**. The page accepts WAV, MP3, FLAC, OGG, M4A,
+AIFF and other formats, restores the upload and plays the original and the
+restored version side by side. The result is also available as a 24-bit WAV
+download. The included example `examples/demo_dirty.wav` is the degraded clip
+from `scripts/make_demo.py`, so no external audio download is required.
+
+Uploads are stored temporarily in `webdemo/jobs/` and deleted after one hour.
+Set `PORT` or `HOST` to change the bind address, e.g. `PORT=8000 python app.py`.
+The demo is local-only by default and does not send audio to any external API.
+
 ### Reproduce the demo (no audio download required)
 
 ```bash
@@ -307,13 +324,22 @@ lower-is-better change is never presented as an improvement.
 
 ```text
 .
+├── app.py                           # Entry point for the local web demo
 ├── audio_restoration.ipynb          # Short walkthrough of the new pipeline
 ├── requirements.txt                 # Core: numpy, scipy, librosa, soundfile, matplotlib
 ├── requirements-optional.txt        # PESQ/STOI, MusicGen, yt-dlp
+├── requirements-web.txt             # Flask, only for the local demo site
 ├── LICENSE
 ├── README.md
 ├── docs/
 │   └── spectrograms_comparison.png  # Demo figure used above
+├── examples/
+│   ├── README.md
+│   └── demo_dirty.wav               # Small example used by the web demo
+├── webdemo/
+│   ├── app.py                       # Flask API and page routes
+│   ├── templates/index.html         # Demo page
+│   └── static/                      # CSS and JavaScript
 ├── src/
 │   ├── __init__.py                  # Public, lazily imported API
 │   ├── dsp.py                       # STFT denoiser, filters, limiter, dither
