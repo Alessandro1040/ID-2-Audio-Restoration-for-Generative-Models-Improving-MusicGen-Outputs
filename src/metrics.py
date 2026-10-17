@@ -1,343 +1,422 @@
-"""
-Audio Quality Metrics for Evaluation
+"""Objective audio-quality metrics for restoration evaluation.
 
-Implements various objective metrics to assess audio quality improvements.
+The first version of this module had a broken ``compute_all`` (it called
+``compute_snr`` with a single argument) and a misleading SNR that compared the
+restored signal with the *noisy* input without a reference.  This rewrite keeps
+the reference-free descriptors but separates them from reference-based metrics:
+
+* **reference-free** (spectral flatness, bandwidth, roll-off, noise floor,
+  clipping, DC offset, ...) can be computed on any file;
+* **reference-based** (SI-SDR, SNR, LSD, segmental SNR, and optionally PESQ /
+  STOI) require the clean signal and are only reported when one is available.
+
+Higher/lower-is-better directions are declared in ``METRIC_DIRECTION`` so the
+CLI and the comparison table never mark a regression as an improvement.
 
 Author: Alessandro Lo Curcio
-Date: 2025
+Course: Machine Learning 2024/2025, Sapienza University of Rome
 """
 
-import numpy as np
+from __future__ import annotations
+
+import math
+from typing import Dict, Optional, Tuple
+
 import librosa
-from typing import Dict, Tuple
-import warnings
-warnings.filterwarnings('ignore')
+import numpy as np
+from scipy import signal
+
+from . import dsp
+
+LOWER_IS_BETTER = {
+    "Spectral Flatness", "Zero Crossing Rate", "LSD (dB)",
+    "Clipping (%)", "Noise Floor (dBFS)", "DC Offset",
+}
+HIGHER_IS_BETTER = {
+    "SI-SDR (dB)", "SNR (dB)", "Segmental SNR (dB)", "PESQ", "STOI",
+}
+NEUTRAL = {"Dynamic Range (dB)", "Spectral Centroid (Hz)",
+           "Bandwidth (Hz)", "Spectral Rolloff (Hz)", "THD (%)",
+           "Integrated Loudness (LUFS)", "True Peak (dBTP)"}
+METRIC_DIRECTION = {
+    **{k: "lower" for k in LOWER_IS_BETTER},
+    **{k: "higher" for k in HIGHER_IS_BETTER},
+    **{k: "neutral" for k in NEUTRAL},
+}
 
 
 class AudioQualityMetrics:
+    """Compute objective audio-quality metrics.
+
+    Parameters
+    ----------
+    sample_rate : int
+        Analysis sample rate.  Files are loaded at this rate by
+        :meth:`evaluate_file`.
     """
-    Compute objective audio quality metrics
-    
-    Metrics include:
-        - Signal-to-Noise Ratio (SNR)
-        - Spectral Flatness
-        - Bandwidth
-        - Spectral Rolloff
-        - Dynamic Range
-        - Total Harmonic Distortion (THD)
-        - Spectral Centroid
-        - Zero Crossing Rate
-    
-    Args:
-        sample_rate (int): Audio sample rate in Hz
-    
-    Example:
-        >>> metrics = AudioQualityMetrics(sample_rate=32000)
-        >>> results = metrics._all(audio_signal)
-    """
-    
+
     def __init__(self, sample_rate: int = 32000):
-        self.sr = sample_rate
-    
+        self.sr = int(sample_rate)
+
+    # ------------------------------------------------------------------ #
+    # Reference-based metrics
+    # ------------------------------------------------------------------ #
     def compute_snr(self, original: np.ndarray, restored: np.ndarray) -> float:
+        """SNR in dB between a reference and an estimate.
+
+        The estimate is scaled to the reference energy first so that a simple
+        volume change is not counted as noise.  Returns 100 dB for identical
+        signals (instead of infinity, to keep CSV/JSON simple).
         """
-        Compute the Signal-to-Noise Ratio (SNR) between original and restored audio.
-        Uses energy alignment to avoid volume bias in the measurement.
-        
-        Args:
-            original: Reference/Original audio signal.
-            restored: Processed/Restored audio signal.
-            
-        Returns:
-            SNR value in decibels (dB).
-        """
-        # Ensure signals have the same length
-        target_len = min(len(original), len(restored))
-        original = original[:target_len]
-        restored = restored[:target_len]
-        
-        # Energy normalization for noise computation
-        original_rms = np.sqrt(np.mean(original**2))
-        restored_rms = np.sqrt(np.mean(restored**2))
-        
-        if restored_rms == 0: 
+        ref, est = self._align(original, restored)
+        ref = ref - np.mean(ref)
+        est = est - np.mean(est)
+        ref_rms = float(np.sqrt(np.mean(ref ** 2)))
+        est_rms = float(np.sqrt(np.mean(est ** 2)))
+        if est_rms < 1e-12:
             return 0.0
-        
-        # Scale restored signal to match original energy levels before computing noise
-        restored_scaled = restored * (original_rms / restored_rms)
-        noise = original - restored_scaled
-        
-        signal_power = np.mean(original**2)
-        noise_power = np.mean(noise**2)
-        
-        # Handle identical signals or near-zero noise to avoid division by zero
-        if noise_power < 1e-10: 
+        est = est * (ref_rms / est_rms)
+        noise = ref - est
+        noise_power = float(np.mean(noise ** 2))
+        if noise_power < 1e-10:
             return 100.0
-        
-        snr = 10 * np.log10(signal_power / noise_power)
-        return float(snr)
-    
+        return float(10.0 * np.log10(np.mean(ref ** 2) / noise_power))
+
+    def compute_si_sdr(self, reference: np.ndarray, estimate: np.ndarray) -> float:
+        """Scale-invariant signal-to-distortion ratio (SI-SDR) in dB."""
+        ref, est = self._align(reference, estimate)
+        ref = ref - np.mean(ref)
+        est = est - np.mean(est)
+        alpha = float(np.dot(est, ref) / (np.dot(ref, ref) + 1e-12))
+        target = alpha * ref
+        error = est - target
+        ratio = float(np.sum(target ** 2) / (np.sum(error ** 2) + 1e-12))
+        return float(10.0 * np.log10(max(ratio, 1e-12)))
+
+    def compute_segmental_snr(self, reference: np.ndarray, estimate: np.ndarray,
+                              frame_ms: float = 20.0) -> float:
+        """Average frame-wise SNR in dB, clamped to [-10, 35] dB."""
+        ref, est = self._align(reference, estimate)
+        ref = ref - np.mean(ref)
+        est = est - np.mean(est)
+        ref_rms = float(np.sqrt(np.mean(ref ** 2)))
+        est_rms = float(np.sqrt(np.mean(est ** 2)))
+        if est_rms < 1e-12:
+            return -10.0
+        est = est * (ref_rms / est_rms)
+        frame = max(1, int(self.sr * frame_ms / 1000.0))
+        count = len(ref) // frame
+        if count == 0:
+            return self.compute_snr(ref, est)
+        ref_f = ref[:count * frame].reshape(count, frame)
+        est_f = est[:count * frame].reshape(count, frame)
+        noise = np.mean((ref_f - est_f) ** 2, axis=1)
+        signal_power = np.mean(ref_f ** 2, axis=1)
+        snr = 10.0 * np.log10((signal_power + 1e-12) / (noise + 1e-12))
+        return float(np.mean(np.clip(snr, -10.0, 35.0)))
+
+    def compute_lsd(self, reference: np.ndarray, estimate: np.ndarray,
+                    fmin: float = 200.0, fmax: float = 7000.0) -> float:
+        """Log-spectral distance (dB), optionally restricted to a band.
+
+        The default band (200 Hz - 7 kHz) avoids bins where a band-limited
+        reference has almost no energy, which makes full-band LSD unstable.
+        """
+        ref, est = self._align(reference, estimate)
+        n_fft = 2048 if self.sr >= 32000 else 1024
+        hop = n_fft // 4
+        a = np.abs(librosa.stft(ref, n_fft=n_fft, hop_length=hop))
+        b = np.abs(librosa.stft(est, n_fft=n_fft, hop_length=hop))
+        frames = min(a.shape[1], b.shape[1])
+        a, b = a[:, :frames], b[:, :frames]
+        freqs = librosa.fft_frequencies(sr=self.sr, n_fft=n_fft)
+        upper = fmax if fmax else self.sr / 2
+        band = (freqs >= fmin) & (freqs <= min(upper, self.sr / 2))
+        if not band.any():
+            return 0.0
+        a, b = a[band], b[band]
+        # Ignore bins where the reference has essentially no content: a single
+        # near-zero bin would otherwise dominate the log distance.
+        active = a.max(axis=1) > max(float(a.max()) * 1e-3, 1e-8)
+        if active.any():
+            a, b = a[active], b[active]
+        floor = max(float(a.max()) * 1e-4, 1e-8)
+        a = np.maximum(a, floor)
+        b = np.maximum(b, floor)
+        diff = 20.0 * np.log10(a) - 20.0 * np.log10(b)
+        diff = np.clip(diff, -60.0, 60.0)
+        return float(np.mean(np.sqrt(np.mean(diff ** 2, axis=0))))
+
+    def compute_pesq(self, reference: np.ndarray, estimate: np.ndarray
+                     ) -> Optional[float]:
+        """Optional PESQ (wide-band, 16 kHz).  ``None`` if not installed."""
+        try:
+            from pesq import pesq  # type: ignore
+        except ImportError:
+            return None
+        ref, est = self._align(reference, estimate)
+        if self.sr != 16000:
+            ref = signal.resample_poly(ref, 16000, self.sr)
+            est = signal.resample_poly(est, 16000, self.sr)
+        try:
+            return float(pesq(16000, ref, est, "wb"))
+        except Exception:
+            return None
+
+    def compute_stoi(self, reference: np.ndarray, estimate: np.ndarray
+                     ) -> Optional[float]:
+        """Optional STOI (16 kHz).  ``None`` if not installed."""
+        try:
+            from pystoi import stoi  # type: ignore
+        except ImportError:
+            return None
+        ref, est = self._align(reference, estimate)
+        if self.sr != 16000:
+            ref = signal.resample_poly(ref, 16000, self.sr)
+            est = signal.resample_poly(est, 16000, self.sr)
+        try:
+            return float(stoi(ref, est, 16000, extended=False))
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------ #
+    # Reference-free descriptors
+    # ------------------------------------------------------------------ #
     def compute_spectral_flatness(self, audio: np.ndarray) -> float:
-        """
-        Compute Spectral Flatness
-        
-        Lower values indicate more tonal content (better for music)
-        Values close to 1 indicate noise-like spectrum
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            Spectral flatness (0-1)
-        """
-        flatness = librosa.feature.spectral_flatness(y=audio)
+        """Spectral flatness in [0, 1]; lower means more tonal."""
+        flatness = librosa.feature.spectral_flatness(y=self._mono(audio))
         return float(np.mean(flatness))
-    
+
     def compute_bandwidth(self, audio: np.ndarray) -> float:
-        """
-        Compute effective bandwidth in Hz
-        
-        Measures the spread of the spectrum
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            Bandwidth in Hz
-        """
-        bandwidth = librosa.feature.spectral_bandwidth(y=audio, sr=self.sr)
+        """Mean spectral bandwidth in Hz."""
+        bandwidth = librosa.feature.spectral_bandwidth(y=self._mono(audio), sr=self.sr)
         return float(np.mean(bandwidth))
-    
-    def compute_spectral_rolloff(self, audio: np.ndarray, 
+
+    def compute_spectral_rolloff(self, audio: np.ndarray,
                                  roll_percent: float = 0.85) -> float:
-        """
-        Compute Spectral Roll-off frequency
-        
-        Frequency below which `roll_percent` of energy is contained
-        Higher values indicate more high-frequency content
-        
-        Args:
-            audio: Input audio signal
-            roll_percent: Percentage of energy (default 0.85 = 85%)
-        
-        Returns:
-            Roll-off frequency in Hz
-        """
+        """Frequency below which ``roll_percent`` of the energy is contained."""
         rolloff = librosa.feature.spectral_rolloff(
-            y=audio, 
-            sr=self.sr, 
-            roll_percent=roll_percent
-        )
+            y=self._mono(audio), sr=self.sr, roll_percent=roll_percent)
         return float(np.mean(rolloff))
-    
+
     def compute_dynamic_range(self, audio: np.ndarray) -> float:
-        """
-        Compute Dynamic Range in dB
-        
-        Difference between peak and RMS level
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            Dynamic range in dB
-        """
-        peak = np.max(np.abs(audio))
-        rms = np.sqrt(np.mean(audio ** 2))
-        dr = 20 * np.log10(peak / (rms + 1e-10))
-        return float(dr)
-    
+        """Crest factor (peak minus RMS) in dB."""
+        x = self._mono(audio)
+        peak = float(np.max(np.abs(x))) if x.size else 0.0
+        level = float(np.sqrt(np.mean(x ** 2))) if x.size else 0.0
+        if level < 1e-10:
+            return 0.0
+        return float(20.0 * np.log10((peak + 1e-10) / (level + 1e-10)))
+
     def compute_thd(self, audio: np.ndarray, n_harmonics: int = 5) -> float:
+        """Total harmonic distortion (%) for a tonal signal.
+
+        The fundamental is the strongest spectral peak above 20 Hz; harmonics
+        are measured at the nearest bin to ``n * f0``.  On polyphonic music this
+        number is only a rough diagnostic.
         """
-        Compute Total Harmonic Distortion (THD)
-        
-        Ratio of harmonic power to fundamental power
-        Lower values indicate less distortion
-        
-        Args:
-            audio: Input audio signal
-            n_harmonics: Number of harmonics to consider
-        
-        Returns:
-            THD as percentage
-        """
-        # FFT
-        fft = np.fft.rfft(audio)
-        magnitude = np.abs(fft)
-        
-        # Find fundamental frequency (skip DC component)
-        fundamental_idx = np.argmax(magnitude[10:]) + 10
-        fundamental_power = magnitude[fundamental_idx] ** 2
-        
-        # Sum harmonic powers
-        harmonic_power = 0
-        for n in range(2, n_harmonics + 1):
-            harmonic_idx = int(fundamental_idx * n)
-            if harmonic_idx < len(magnitude):
-                harmonic_power += magnitude[harmonic_idx] ** 2
-        
-        # Compute THD
-        thd = np.sqrt(harmonic_power / (fundamental_power + 1e-10))
-        
-        return float(thd * 100)  # Convert to percentage
-    
+        x = self._mono(audio)
+        if x.size < 64:
+            return 0.0
+        window = np.hanning(len(x))
+        magnitude = np.abs(np.fft.rfft(x * window))
+        freqs = np.fft.rfftfreq(len(x), d=1.0 / self.sr)
+        valid = freqs >= 20.0
+        if not valid.any():
+            return 0.0
+        fundamental_idx = int(np.flatnonzero(valid)[np.argmax(magnitude[valid])])
+        fundamental_power = float(magnitude[fundamental_idx] ** 2)
+        if fundamental_power < 1e-12:
+            return 0.0
+        harmonic_power = 0.0
+        for harmonic in range(2, int(n_harmonics) + 1):
+            target = harmonic * freqs[fundamental_idx]
+            lo = max(0, int(np.searchsorted(freqs, target - 2.0 * (freqs[1] - freqs[0]))))
+            hi = min(len(magnitude), int(np.searchsorted(freqs, target + 2.0 * (freqs[1] - freqs[0]))) + 1)
+            if hi > lo:
+                harmonic_power += float(np.max(magnitude[lo:hi]) ** 2)
+        return float(math.sqrt(harmonic_power / fundamental_power) * 100.0)
+
     def compute_spectral_centroid(self, audio: np.ndarray) -> float:
-        """
-        Compute Spectral Centroid in Hz
-        
-        Center of mass of the spectrum
-        Indicates "brightness" of sound
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            Spectral centroid in Hz
-        """
-        centroid = librosa.feature.spectral_centroid(y=audio, sr=self.sr)
+        """Spectral centroid in Hz ("brightness")."""
+        centroid = librosa.feature.spectral_centroid(y=self._mono(audio), sr=self.sr)
         return float(np.mean(centroid))
-    
+
     def compute_zcr(self, audio: np.ndarray) -> float:
-        """
-        Compute Zero Crossing Rate
-        
-        Number of times signal crosses zero
-        Related to noisiness of signal
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            Zero crossing rate
-        """
-        zcr = librosa.feature.zero_crossing_rate(audio)
-        return float(np.mean(zcr))
-    
-    def compute_all(self, audio: np.ndarray) -> Dict[str, float]:
-        """
-        Compute all available metrics
-        
-        Args:
-            audio: Input audio signal
-        
-        Returns:
-            Dictionary with all metric values
-        """
-        metrics = {
-            'SNR (dB)': self.compute_snr(audio),
-            'Spectral Flatness': self.compute_spectral_flatness(audio),
-            'Bandwidth (Hz)': self.compute_bandwidth(audio),
-            'Spectral Rolloff (Hz)': self.compute_spectral_rolloff(audio),
-            'Dynamic Range (dB)': self.compute_dynamic_range(audio),
-            'THD (%)': self.compute_thd(audio),
-            'Spectral Centroid (Hz)': self.compute_spectral_centroid(audio),
-            'Zero Crossing Rate': self.compute_zcr(audio)
+        """Mean zero-crossing rate."""
+        return float(np.mean(librosa.feature.zero_crossing_rate(self._mono(audio))))
+
+    def compute_noise_floor(self, audio: np.ndarray,
+                            percentile: float = 10.0) -> float:
+        """Noise floor in dBFS, estimated from quiet frame RMS values."""
+        x = self._mono(audio)
+        frame = max(1, int(0.02 * self.sr))
+        count = len(x) // frame
+        if count == 0:
+            return -120.0
+        frames = x[:count * frame].reshape(count, frame)
+        levels = 20.0 * np.log10(np.sqrt(np.mean(frames ** 2, axis=1)) + 1e-12)
+        return float(np.clip(np.percentile(levels, percentile), -120.0, 0.0))
+
+    def compute_clipping_ratio(self, audio: np.ndarray,
+                               threshold: float = 0.999) -> float:
+        """Percentage of samples at or above the clipping threshold."""
+        x = self._mono(audio)
+        return float(np.mean(np.abs(x) >= threshold) * 100.0)
+
+    def compute_dc_offset(self, audio: np.ndarray) -> float:
+        """Absolute DC offset."""
+        return float(abs(np.mean(self._mono(audio))))
+
+    def compute_loudness(self, audio: np.ndarray) -> float:
+        """Integrated loudness in LUFS (BS.1770-4), -120 for silence."""
+        value = dsp.integrated_loudness(self._mono(audio), self.sr)
+        return float(max(value, -120.0))
+
+    def compute_true_peak(self, audio: np.ndarray) -> float:
+        """True peak in dBTP, -120 for silence."""
+        value = dsp.true_peak_db(self._mono(audio), self.sr)
+        return float(max(value, -120.0))
+
+    # ------------------------------------------------------------------ #
+    # Aggregations
+    # ------------------------------------------------------------------ #
+    def compute_all(self, audio: np.ndarray,
+                    reference: Optional[np.ndarray] = None) -> Dict[str, float]:
+        """Compute all metrics.  Reference-based ones need ``reference``."""
+        x = self._mono(audio)
+        metrics: Dict[str, float] = {
+            "Spectral Flatness": self.compute_spectral_flatness(x),
+            "Bandwidth (Hz)": self.compute_bandwidth(x),
+            "Spectral Rolloff (Hz)": self.compute_spectral_rolloff(x),
+            "Dynamic Range (dB)": self.compute_dynamic_range(x),
+            "THD (%)": self.compute_thd(x),
+            "Spectral Centroid (Hz)": self.compute_spectral_centroid(x),
+            "Zero Crossing Rate": self.compute_zcr(x),
+            "Noise Floor (dBFS)": self.compute_noise_floor(x),
+            "Clipping (%)": self.compute_clipping_ratio(x),
+            "DC Offset": self.compute_dc_offset(x),
+            "Integrated Loudness (LUFS)": self.compute_loudness(x),
+            "True Peak (dBTP)": self.compute_true_peak(x),
         }
-        
+        if reference is not None:
+            ref = self._mono(reference)
+            metrics["SI-SDR (dB)"] = self.compute_si_sdr(ref, x)
+            metrics["SNR (dB)"] = self.compute_snr(ref, x)
+            metrics["Segmental SNR (dB)"] = self.compute_segmental_snr(ref, x)
+            metrics["LSD (dB)"] = self.compute_lsd(ref, x)
+            pesq = self.compute_pesq(ref, x)
+            if pesq is not None:
+                metrics["PESQ"] = pesq
+            stoi = self.compute_stoi(ref, x)
+            if stoi is not None:
+                metrics["STOI"] = stoi
         return metrics
-    
-    def evaluate_file(self, filepath: str) -> Dict[str, float]:
+
+    def evaluate_file(self, filepath: str,
+                      reference_path: Optional[str] = None) -> Dict[str, float]:
+        """Load a file (mono at ``self.sr``) and compute its metrics."""
+        audio, _ = librosa.load(filepath, sr=self.sr, mono=True)
+        reference = None
+        if reference_path is not None:
+            reference, _ = librosa.load(reference_path, sr=self.sr, mono=True)
+        return self.compute_all(audio, reference)
+
+    def compare_files(self, original_path: str, restored_path: str,
+                      reference_path: Optional[str] = None
+                      ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Optional[float]]]:
+        """Compare original and restored files.
+
+        If ``reference_path`` (the clean target) is given, reference-based
+        metrics are computed for both the original and the restored file.
         """
-        Evaluate audio file and return all metrics
-        
-        Args:
-            filepath: Path to audio file
-        
-        Returns:
-            Dictionary with metric values
-        """
-        audio, sr = librosa.load(filepath, sr=self.sr, mono=True)
-        return self.compute_all(audio)
-    
-    def compare_files(self, 
-                     original_path: str,
-                     restored_path: str) -> Tuple[Dict, Dict, Dict]:
-        """
-        Compare original and restored audio files
-        
-        Args:
-            original_path: Path to original audio
-            restored_path: Path to restored audio
-        
-        Returns:
-            Tuple of (original_metrics, restored_metrics, improvements)
-        """
-        # Compute metrics for both files
-        original_metrics = self.evaluate_file(original_path)
-        restored_metrics = self.evaluate_file(restored_path)
-        
-        # Compute improvements (delta)
-        improvements = {}
-        for key in original_metrics.keys():
-            improvements[key] = restored_metrics[key] - original_metrics[key]
-        
+        original = self.evaluate_file(original_path, reference_path)
+        restored = self.evaluate_file(restored_path, reference_path)
+        improvements: Dict[str, Optional[float]] = {}
+        for key in original:
+            a, b = original.get(key), restored.get(key)
+            improvements[key] = None if a is None or b is None else b - a
+        return original, restored, improvements
+
+    def compare_arrays(self, reference: np.ndarray, original: np.ndarray,
+                       restored: np.ndarray
+                       ) -> Tuple[Dict[str, float], Dict[str, float], Dict[str, Optional[float]]]:
+        """Like :meth:`compare_files`, for in-memory signals."""
+        original_metrics = self.compute_all(original, reference)
+        restored_metrics = self.compute_all(restored, reference)
+        improvements: Dict[str, Optional[float]] = {}
+        for key in original_metrics:
+            a, b = original_metrics.get(key), restored_metrics.get(key)
+            improvements[key] = None if a is None or b is None else b - a
         return original_metrics, restored_metrics, improvements
-    
-    def print_comparison(self,
-                        original_metrics: Dict,
-                        restored_metrics: Dict,
-                        improvements: Dict):
-        """
-        Print formatted comparison table
-        
-        Args:
-            original_metrics: Metrics for original audio
-            restored_metrics: Metrics for restored audio
-            improvements: Delta between restored and original
-        """
-        print("\n" + "="*70)
-        print(f"{'Metric':<30} {'Original':>12} {'Restored':>12} {'Delta':>12}")
-        print("="*70)
-        
-        for metric_name in original_metrics.keys():
-            orig = original_metrics[metric_name]
-            rest = restored_metrics[metric_name]
-            delta = improvements[metric_name]
-            
-            # Determine if improvement is good
-            # For most metrics, higher is better
-            # Exceptions: Spectral Flatness, THD, ZCR (lower is better)
-            lower_is_better = metric_name in [
-                'Spectral Flatness', 
-                'THD (%)', 
-                'Zero Crossing Rate'
-            ]
-            
-            is_improvement = delta < 0 if lower_is_better else delta > 0
-            indicator = "✓" if is_improvement else "✗"
-            
-            # Format numbers
-            if 'Hz' in metric_name:
-                print(f"{metric_name:<30} {orig:>12.0f} {rest:>12.0f} "
-                      f"{delta:>+12.0f} {indicator}")
+
+    # ------------------------------------------------------------------ #
+    # Reporting helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def is_improvement(metric: str, delta: Optional[float]) -> Optional[bool]:
+        if delta is None:
+            return None
+        direction = METRIC_DIRECTION.get(metric, "neutral")
+        if direction == "lower":
+            return delta < 0
+        if direction == "higher":
+            return delta > 0
+        return None
+
+    def print_comparison(self, original_metrics: Dict[str, float],
+                         restored_metrics: Dict[str, float],
+                         improvements: Dict[str, Optional[float]]) -> None:
+        """Print a direction-aware comparison table."""
+        print("\n" + "=" * 82)
+        print(f"{'Metric':<30} {'Original':>13} {'Restored':>13} {'Delta':>13}  Verdict")
+        print("=" * 82)
+        for name, original in original_metrics.items():
+            restored = restored_metrics.get(name)
+            delta = improvements.get(name)
+            if original is None or restored is None or delta is None:
+                verdict = "n/a"
+                print(f"{name:<30} {'n/a':>13} {'n/a':>13} {'n/a':>13}  {verdict}")
+                continue
+            good = self.is_improvement(name, delta)
+            verdict = "~" if good is None else ("improved" if good else "worse")
+            if "Hz" in name and "LSD" not in name:
+                print(f"{name:<30} {original:>13.0f} {restored:>13.0f} "
+                      f"{delta:>+13.0f}  {verdict}")
             else:
-                print(f"{metric_name:<30} {orig:>12.3f} {rest:>12.3f} "
-                      f"{delta:>+12.3f} {indicator}")
-        
-        print("="*70)
+                print(f"{name:<30} {original:>13.3f} {restored:>13.3f} "
+                      f"{delta:>+13.3f}  {verdict}")
+        print("=" * 82)
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _mono(audio: np.ndarray) -> np.ndarray:
+        return dsp.as_mono(audio)
+
+    @staticmethod
+    def _align(reference: np.ndarray, estimate: np.ndarray
+               ) -> Tuple[np.ndarray, np.ndarray]:
+        ref = dsp.as_mono(reference)
+        est = dsp.as_mono(estimate)
+        length = min(len(ref), len(est))
+        if length == 0:
+            raise ValueError("empty audio signal")
+        return ref[:length], est[:length]
 
 
-def main():
-    """Example usage"""
-    metrics = AudioQualityMetrics(sample_rate=32000)
-    
-    # Single file evaluation
-    results = metrics.evaluate_file("generated_audio/sample_1.wav")
-    print("\nMetrics for sample_1.wav:")
-    for key, value in results.items():
-        print(f"  {key}: {value:.3f}")
-    
-    # Compare original vs restored
-    print("\n" + "="*70)
-    print("COMPARISON: Original vs Restored")
-    print("="*70)
-    
-    orig, rest, improvements = metrics.compare_files(
-        original_path="generated_audio/sample_1.wav",
-        restored_path="restored_audio/restored_sample_1.wav"
-    )
-    
-    metrics.print_comparison(orig, rest, improvements)
+def main() -> None:
+    """Small self-test that needs no external file."""
+    sr = 32000
+    t = np.arange(int(2.0 * sr)) / sr
+    reference = 0.4 * np.sin(2 * np.pi * 440 * t)
+    rng = np.random.default_rng(0)
+    noisy = reference + 0.02 * rng.standard_normal(len(reference))
+    metrics = AudioQualityMetrics(sample_rate=sr)
+    print("Noisy signal vs clean reference")
+    for name, value in metrics.compute_all(noisy, reference).items():
+        print(f"  {name}: {value:.3f}")
 
 
 if __name__ == "__main__":

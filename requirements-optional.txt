@@ -1,0 +1,13 @@
+# Optional objective metrics; scripts/evaluate.py skips them when missing.
+pesq>=0.0.4
+pystoi>=0.3.3
+
+# Optional MusicGen sample generation (scripts/generate_audio.py).
+# audiocraft needs a compatible Python version (3.9-3.11) and a lot of disk.
+torch>=2.0.0
+torchaudio>=2.0.0
+audiocraft>=1.0.0
+tqdm>=4.65.0
+
+# Optional download helper for scripts/download_test_samples.py
+yt-dlp>=2023.12.30

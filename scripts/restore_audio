@@ -1,66 +1,10 @@
 #!/usr/bin/env python3
-"""
-Apply restoration pipeline to audio files
-
-Usage:
-    python scripts/restore_audio.py --input_dir results/audio_samples/original --output_dir results/audio_samples/restored
-"""
-
-import argparse
-import os
+"""Backwards-compatible shim for the old ``scripts/restore_audio`` entry point."""
 import sys
 from pathlib import Path
-from tqdm import tqdm
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.restoration import AudioRestorer
-
-def main():
-    parser = argparse.ArgumentParser(description="Batch audio restoration")
-    parser.add_argument('--input_dir', type=str, required=True)
-    parser.add_argument('--output_dir', type=str, required=True)
-    parser.add_argument('--sample_rate', type=int, default=32000)
-    args = parser.parse_args()
-    
-    # Create output directory
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    # Find audio files
-    input_path = Path(args.input_dir)
-    audio_files = sorted(input_path.glob("*.wav"))
-    
-    if not audio_files:
-        print(f"❌ No audio files found in {args.input_dir}")
-        return
-    
-    print("=" * 70)
-    print(f"BATCH AUDIO RESTORATION")
-    print("=" * 70)
-    print(f"Input: {args.input_dir}")
-    print(f"Output: {args.output_dir}")
-    print(f"Files: {len(audio_files)}")
-    print("=" * 70 + "\n")
-    
-    # Initialize restorer
-    restorer = AudioRestorer(sample_rate=args.sample_rate, verbose=False)
-    
-    # Process files
-    successful = 0
-    for audio_file in tqdm(audio_files, desc="Restoring"):
-        try:
-            output_filename = f"restored_{audio_file.name}"
-            output_path = os.path.join(args.output_dir, output_filename)
-            
-            restorer.restore(str(audio_file), output_path)
-            successful += 1
-            
-        except Exception as e:
-            print(f"\n❌ Error: {audio_file.name}: {e}")
-    
-    print("\n" + "=" * 70)
-    print(f"✅ Restoration complete: {successful}/{len(audio_files)} successful")
-    print("=" * 70)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from restore_audio import main  # noqa: E402
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
