@@ -204,8 +204,13 @@
     downloadLink.setAttribute("download", data.output_name);
 
     $("result-filename").textContent = data.filename;
-    $("result-meta").textContent = data.preset_label + " · " + channelLabel(data.channels) +
-      " · " + formatNumber(data.sample_rate, 0) + " Hz";
+    const extras = [];
+    if (data.vocals) extras.push("voce: " + data.vocals_label);
+    if (data.clean_silence) extras.push("silenzi puliti");
+    $("result-meta").textContent = [data.preset_label].concat(extras, [
+      channelLabel(data.channels),
+      formatNumber(data.sample_rate, 0) + " Hz"
+    ]).join(" · ");
     $("meta-sr").textContent = formatNumber(data.sample_rate, 0) + " Hz";
     $("meta-channels").textContent = channelLabel(data.channels);
     $("meta-duration").textContent = formatDuration(data.duration_s);
@@ -235,9 +240,13 @@
     }
 
     const preset = form.querySelector('input[name="preset"]:checked');
+    const vocalMode = form.querySelector('input[name="vocals"]:checked');
+    const cleanSilence = form.querySelector('input[name="clean_silence"]');
     const data = new FormData();
     data.append("audio", selectedFile, selectedFile.name);
     data.append("preset", preset ? preset.value : "music");
+    data.append("vocals", vocalMode ? vocalMode.value : "keep");
+    data.append("clean_silence", cleanSilence && cleanSilence.checked ? "1" : "0");
 
     busy = true;
     restoreButton.disabled = true;

@@ -9,8 +9,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,500;1,300;1,500&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
-<script defer src="{{ url_for('static', filename='js/app.js') }}"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=20261018">
+<script defer src="{{ url_for('static', filename='js/app.js') }}?v=20261018"></script>
 </head>
 <body>
 
@@ -136,6 +136,34 @@
               {% endfor %}
             </div>
           </fieldset>
+
+          <fieldset class="preset-field">
+            <legend>Voce nella traccia</legend>
+            <div class="preset-grid preset-grid--three">
+              {% for value, label in vocal_modes.items() %}
+              <label class="preset-option">
+                <input type="radio" name="vocals" value="{{ value }}" {% if value == 'keep' %}checked{% endif %}>
+                <span>{{ label }}</span>
+              </label>
+              {% endfor %}
+            </div>
+            <p class="field-hint">
+              Scegli <strong>Mantieni</strong> se la voce fa parte della canzone,
+              <strong>Riduci</strong> se vuoi solo abbassarla, <strong>Rimuovi</strong>
+              se è un sottofondo o vuoi la base strumentale. Con Demucs installato
+              la separazione è vera; senza Demucs resta la riduzione mid/side, efficace
+              solo su voci al centro di un mix stereo.
+            </p>
+          </fieldset>
+
+          <label class="check-option">
+            <input type="checkbox" name="clean_silence" value="1" checked>
+            <span class="check-option__box" aria-hidden="true"></span>
+            <span class="check-option__text">
+              <strong>Pulisci i momenti di solo rumore</strong>
+              <small>Vale in tutte le modalità. Se non c'è una nota, una batteria o un altro evento, il segnale viene azzerato. La coda dell'ultima nota resta e sfuma; i rumori isolati vengono accorciati molto più delle note.</small>
+            </span>
+          </label>
 
           <button class="btn btn--solid btn--full restore-button" id="restore-button" type="submit">
             <span class="button-label">Ripulisci audio</span>

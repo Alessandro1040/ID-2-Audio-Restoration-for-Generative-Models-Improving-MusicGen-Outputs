@@ -62,6 +62,8 @@ def build_config(args: argparse.Namespace) -> RestorationConfig:
         overrides["highpass_hz"] = args.highpass
     if args.target_lufs is not None:
         overrides["target_lufs"] = args.target_lufs
+    if args.vocals is not None:
+        overrides["vocals"] = args.vocals
     config = RestorationConfig.from_preset(
         args.preset,
         target_sample_rate=args.sample_rate,
@@ -79,6 +81,8 @@ def build_config(args: argparse.Namespace) -> RestorationConfig:
         changes["eq"] = False
     if args.no_normalize:
         changes["normalize"] = False
+    if args.no_silence_clean:
+        changes["clean_silence"] = False
     if args.hum is not None:
         changes["remove_hum"] = args.hum
     return replace(config, **changes) if changes else config
@@ -107,6 +111,11 @@ def main() -> int:
                         help="force mains-hum removal")
     parser.add_argument("--no-hum", dest="hum", action="store_false",
                         help="disable mains-hum removal")
+    parser.add_argument("--vocals", default=None,
+                        choices=["keep", "reduce", "remove"],
+                        help="keep, attenuate or remove the vocal stem (Demucs)")
+    parser.add_argument("--no-silence-clean", action="store_true",
+                        help="disable the noise-only gate")
     parser.add_argument("--no-denoise", action="store_true")
     parser.add_argument("--no-declip", action="store_true")
     parser.add_argument("--no-eq", action="store_true")
@@ -133,6 +142,8 @@ def main() -> int:
         print("AUDIO RESTORATION")
         print("=" * 78)
         print(f"preset      : {config.preset}")
+        print(f"vocals      : {config.vocals}")
+        print(f"silence gate: {'on' if config.clean_silence else 'off'}")
         print(f"files       : {len(files)}")
         print(f"sample rate : {config.target_sample_rate or 'preserve input'}")
         print(f"output      : {config.bit_depth}-bit {output_dir}")

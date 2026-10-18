@@ -7,14 +7,19 @@ on mono ``(n,)`` or multichannel ``(n, channels)`` float arrays.
 Design notes
 ------------
 * Noise is estimated per frequency bin from a low percentile of the power
-  spectrogram.  On continuous music the quietest frames are the best available
-  proxy for the noise floor; a minimum-statistics tracker was tested as well but
-  did not outperform the percentile estimator on the benchmark.
+  spectrogram, corrected for the downward bias of that percentile and median
+  smoothed across frequency.  On continuous music the quietest frames are the
+  best available proxy for the noise floor.
 * The gain is a decision-directed Wiener gain.  A frequency-dependent gain
   floor protects the low band (where music lives) and allows deeper attenuation
-  above 1 kHz (where hiss and codec noise live).
+  above 4 kHz (where hiss and codec noise live).
+* A noise gate driven by the smoothed posterior SNR removes the residual that
+  the decision-directed gain leaves behind after loud passages.  Because the
+  gate is smoothed over time and frequency it does not turn isolated noise
+  peaks into "musical noise".
 * A transient protection term restores gain on onsets so that drums and piano
-  attacks are not softened.
+  attacks are not softened.  It is weighted by the posterior SNR, so an onset
+  can only reopen bins that actually contain signal, never noise-only bins.
 """
 
 from __future__ import annotations
@@ -26,7 +31,8 @@ import librosa
 import numpy as np
 from scipy import signal
 from scipy.interpolate import PchipInterpolator
-from scipy.ndimage import maximum_filter1d, minimum_filter1d, uniform_filter1d
+from scipy.ndimage import (maximum_filter1d, median_filter, minimum_filter1d,
+                           uniform_filter, uniform_filter1d)
 
 EPS = 1e-12
 
@@ -100,7 +106,8 @@ def _per_channel(x: np.ndarray, fn):
 # Spectral denoising
 # --------------------------------------------------------------------------- #
 def estimate_noise_psd(magnitude: np.ndarray, percentile: float = 15.0,
-                       bias: float = 2.0, smooth_bins: int = 3) -> np.ndarray:
+                       bias: float = 2.0, smooth_bins: int = 3,
+                       median_bins: int = 9, smooth_frames: int = 3) -> np.ndarray:
     """Estimate a stationary noise PSD from a magnitude spectrogram.
 
     Parameters
@@ -112,40 +119,68 @@ def estimate_noise_psd(magnitude: np.ndarray, percentile: float = 15.0,
         values are more conservative (less noise removed, less risk to music).
     bias : float
         Multiplier compensating the downward bias of a low percentile of an
-        exponentially distributed periodogram.  Tuned on real music; it is not
-        meant to recover the statistical mean.
+        exponentially distributed periodogram.  ``1 / -log(1 - q / 100)``
+        recovers the mean, which is what the gain rule needs; slightly lower
+        values leave a safety margin for music.
     smooth_bins : int
         Frequency smoothing of the estimate.
+    median_bins : int
+        Median filter across frequency.  It removes narrowband peaks (sustained
+        notes, tonal artefacts) that would otherwise inflate the estimate around
+        a single bin.
+    smooth_frames : int
+        Short temporal smoothing applied before the percentile.  Noise is
+        stationary from frame to frame while notes are not, so averaging three
+        frames makes the low percentile a less biased estimate of the noise.
     """
     power = np.asarray(magnitude, dtype=np.float64) ** 2
     if power.ndim != 2:
         raise ValueError("magnitude must be 2-D (freqs, frames)")
+    if smooth_frames > 1:
+        power = uniform_filter1d(power, int(smooth_frames), axis=1)
     if power.shape[1] < 8:
         # Too few frames for a percentile: use a robust minimum.
         noise = np.min(power, axis=1) * bias * 4.0
     else:
         q = float(np.clip(percentile, 1.0, 50.0))
         noise = np.percentile(power, q, axis=1) * bias
+    if median_bins > 1:
+        noise = median_filter(np.maximum(noise, EPS), size=int(median_bins),
+                              mode="nearest")
     noise = uniform_filter1d(np.maximum(noise, EPS), max(1, int(smooth_bins)))
     return noise
 
 
-def _floor_curve(freqs: np.ndarray, floor_low_db: float, floor_high_db: float) -> np.ndarray:
-    """Gain floor in dB, gentle at 250 Hz and stricter above 8 kHz."""
+def _floor_curve(freqs: np.ndarray, floor_low_db: float,
+                 floor_high_db: float, span_oct: float = 2.0) -> np.ndarray:
+    """Gain floor in dB: gentle at 250 Hz, strict from 4 kHz upwards."""
     f = np.maximum(freqs, 20.0)
-    t = np.clip(np.log2(f / 1000.0) / 3.0, 0.0, 1.0)
+    t = np.clip(np.log2(f / 1000.0) / float(span_oct), 0.0, 1.0)
     return floor_low_db + (floor_high_db - floor_low_db) * t
 
 
+def _smoothstep(x: np.ndarray, low: float, high: float) -> np.ndarray:
+    """S-shaped 0..1 transition between ``low`` and ``high``."""
+    t = np.clip((x - low) / max(float(high - low), 1e-6), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def wiener_gain(magnitude: np.ndarray, noise_psd: np.ndarray,
-                floor_low_db: float = -8.0, floor_high_db: float = -22.0,
+                floor_low_db: float = -18.0, floor_high_db: float = -80.0,
                 alpha: float = 0.98, beta: float = 0.5,
                 smooth_bins: int = 3, protect: float = 0.5,
-                freqs: np.ndarray | None = None) -> np.ndarray:
+                freqs: np.ndarray | None = None, gate: float = 0.0,
+                gate_low: float = 1.2, gate_high: float = 3.0) -> np.ndarray:
     """Decision-directed Wiener gain with a frequency-dependent floor.
 
     ``alpha`` is the decision-directed smoothing factor, ``beta`` smooths the
-    gain over time.  ``protect`` (0-1) raises the gain on spectral onsets.
+    gain over time.  ``protect`` (0-1) restores gain on spectral onsets.
+    ``gate`` (0-1) enables a noise gate driven by the *smoothed* posterior SNR:
+    bins that stay close to the estimated noise are attenuated even when the
+    decision-directed gain is still catching up after a loud passage.  The gate
+    is smoothed over time and frequency so that isolated noise peaks do not
+    open it (which would produce musical noise); ``gate_low``/``gate_high`` are
+    the posterior-SNR bounds of the transition.
     """
     mag = np.asarray(magnitude, dtype=np.float64)
     noise = np.maximum(np.asarray(noise_psd, dtype=np.float64), EPS)[:, None]
@@ -175,20 +210,32 @@ def wiener_gain(magnitude: np.ndarray, noise_psd: np.ndarray,
     gain = signal.lfilter([coeff], [1.0, -float(beta)], gain, axis=1, zi=z)[0]
     gain = np.clip(gain, floor, 1.0)
 
+    gate = float(np.clip(gate, 0.0, 1.0))
+    if gate > 0.0 and mag.shape[1] > 1:
+        # Posterior SNR smoothed over 3 frames (~50 ms) and 3 bins: a single
+        # noise peak cannot open the gate, a sustained partial can.
+        gate_curve = _smoothstep(uniform_filter(gamma, size=(3, 3), mode="nearest"),
+                                 gate_low, gate_high)
+        gain *= (1.0 - gate) + gate * gate_curve
+
     if protect > 0.0 and mag.shape[1] > 1:
         flux = np.maximum(0.0, mag - np.roll(mag, 1, axis=1)).sum(axis=0)
         flux[0] = 0.0
         flux /= np.percentile(flux, 95) + EPS
-        gain += (1.0 - gain) * np.clip(flux, 0.0, 1.0)[None, :] ** 2 * float(protect)
+        # Only bins that are actually above the noise may be protected.  A
+        # broadband flux term alone would also reopen bins that contain nothing
+        # but noise, which is audible as a burst of hiss on every onset.
+        weight = np.clip((gamma - 1.0) / 3.0, 0.0, 1.0)
+        gain += (1.0 - gain) * weight * np.clip(flux, 0.0, 1.0)[None, :] ** 2 * float(protect)
 
     return np.clip(gain, 0.0, 1.0)
 
 
 def spectral_denoise(audio: np.ndarray, sr: int, strength: float = 1.0,
                      n_fft: int | None = None, hop: int | None = None,
-                     percentile: float = 15.0, bias: float = 2.0,
-                     floor_low_db: float = -8.0, floor_high_db: float = -22.0,
-                     protect: float = 0.5) -> np.ndarray:
+                     percentile: float = 10.0, bias: float = 9.5,
+                     floor_low_db: float = -18.0, floor_high_db: float = -80.0,
+                     protect: float = 0.5, gate: float = 1.0) -> np.ndarray:
     """Remove stationary broadband noise from mono or multichannel audio.
 
     A single mask is estimated from the average power of all channels and applied
@@ -210,13 +257,185 @@ def spectral_denoise(audio: np.ndarray, sr: int, strength: float = 1.0,
     gain = wiener_gain(np.sqrt(power), noise,
                        floor_low_db=floor_low_db * min(1.0, strength),
                        floor_high_db=floor_high_db * min(1.0, strength),
-                       protect=protect, freqs=freqs)
+                       protect=protect, freqs=freqs, gate=gate)
 
     out = []
     for c in range(x.shape[1]):
         clean = librosa.istft(spectra[c] * gain, hop_length=hop, length=len(x))
         out.append(clean)
     return np.stack(out, axis=1)
+
+
+# --------------------------------------------------------------------------- #
+# Noise-only silence cleanup
+# --------------------------------------------------------------------------- #
+def silence_envelope(audio: np.ndarray, sr: int, percentile: float = 10.0,
+                     bias: float = 9.5, snr_threshold_db: float = 4.0,
+                     hold_ms: float = 250.0, release_ms: float = 220.0,
+                     attack_ms: float = 10.0, n_fft: int | None = None,
+                     hop: int | None = None,
+                     density_window_ms: float = 1500.0,
+                     density_min: float = 0.20,
+                     isolated_hold_ms: float = 40.0,
+                     isolated_release_ms: float = 60.0,
+                     tonal_snr_db: float | None = 14.0,
+                     tonal_isolated_release_ms: float = 250.0,
+                     tonal_top_bins: int = 3,
+                     tonal_min_hz: float = 80.0,
+                     tonal_max_hz: float = 5000.0,
+                     ) -> tuple[np.ndarray, dict]:
+    """Detect frames that contain only noise and build a mute envelope.
+
+    The detector compares the broadband energy of each STFT frame with the
+    noise PSD estimated by the same percentile/median method used by the
+    denoiser.  A frame whose SNR is below ``snr_threshold_db`` is considered
+    noise-only.  The envelope stays open for ``hold_ms`` after the last active
+    frame so a note tail can decay naturally, then falls linearly to exactly
+    zero over ``release_ms``.  A short attack ramp avoids clicks when a new
+    note reopens the gate.
+
+    A second, tonal detector protects note tails.  After a piano or guitar
+    attack the broadband SNR can fall below the threshold while the note's
+    harmonics are still 10-20 dB above the noise in their own STFT bins.  The
+    mean SNR of the strongest ``tonal_top_bins`` bins (inside
+    ``tonal_min_hz``-``tonal_max_hz``) therefore counts as active too when it
+    exceeds ``tonal_snr_db``.  This keeps the natural decay of a note open
+    without keeping white/pink noise, whose strongest bins stay close to the
+    noise floor.  Set ``tonal_snr_db=None`` to disable this detector.
+
+    Isolated blips are handled differently from music.  When the surrounding
+    ``density_window_ms`` contains less than ``density_min`` active frames, the
+    hold/release times collapse to ``isolated_hold_ms`` / ``isolated_release_ms``.
+    A click, a door or a distant word therefore becomes a short fade instead of
+    being stretched into half a second of residual noise by the normal tail.
+    Dense musical passages keep the full hold/release values, so decaying notes
+    and their tails are not chopped.  An isolated event that the tonal detector
+    recognises as a real note gets ``tonal_isolated_release_ms`` instead, so a
+    single quiet piano note still rings out instead of stopping at the blip fade.
+
+    The power is averaged over channels instead of using a mono downmix: an
+    out-of-phase stereo note must not disappear from the detector.
+
+    Returns ``(envelope, stats)`` where ``envelope`` has one value per sample.
+    """
+    x = as_2d(audio)
+    n = len(x)
+    if n == 0:
+        return np.zeros(0), {"muted_ratio": 1.0, "active_ratio": 0.0}
+
+    n_fft, hop = stft_params(sr, n_fft, hop)
+    power = None
+    for channel in range(x.shape[1]):
+        spectrum = librosa.stft(x[:, channel], n_fft=n_fft, hop_length=hop)
+        channel_power = np.abs(spectrum) ** 2
+        if power is None:
+            power = channel_power
+        else:
+            power += channel_power
+    power /= float(x.shape[1])
+    noise = estimate_noise_psd(np.sqrt(power), percentile=percentile, bias=bias)
+    frame_signal = power.sum(axis=0)
+    frame_noise = float(noise.sum()) + EPS
+    snr_db = 10.0 * np.log10(np.maximum(frame_signal, EPS) / frame_noise)
+    snr_db = uniform_filter1d(snr_db, 3, mode="nearest")
+    active = snr_db >= float(snr_threshold_db)
+
+    # A decaying note can be below the broadband threshold while its harmonic
+    # peaks are still well above the noise floor.  Measuring the strongest
+    # individual bins catches that tail; broadband noise does not produce such
+    # isolated peaks (its top bins stay close to the noise estimate).
+    tonal_active = np.zeros_like(active)
+    tonal_snr: np.ndarray | None = None
+    if tonal_snr_db is not None and int(tonal_top_bins) > 0:
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
+        band = ((freqs >= float(tonal_min_hz))
+                & (freqs <= min(float(tonal_max_hz), sr / 2.0)))
+        if np.any(band):
+            n_top = max(1, min(int(tonal_top_bins), int(np.count_nonzero(band))))
+            bin_snr_db = 10.0 * np.log10(
+                np.maximum(power[band], EPS)
+                / np.maximum(noise[band, None], EPS)
+            )
+            tonal_snr = np.partition(bin_snr_db, -n_top, axis=0)[-n_top:].mean(axis=0)
+            tonal_snr = uniform_filter1d(tonal_snr, 3, mode="nearest")
+            tonal_active = tonal_snr >= float(tonal_snr_db)
+            active = active | tonal_active
+
+    frame_rate = sr / float(hop)
+    hold_frames = max(0, int(round(float(hold_ms) * frame_rate / 1000.0)))
+    release_frames = max(1, int(round(float(release_ms) * frame_rate / 1000.0)))
+    attack_frames = max(1, int(round(float(attack_ms) * frame_rate / 1000.0)))
+    isolated_hold = max(0, int(round(float(isolated_hold_ms) * frame_rate / 1000.0)))
+    isolated_release = max(1, int(round(float(isolated_release_ms) * frame_rate / 1000.0)))
+    tonal_release_frames = max(
+        1, int(round(float(tonal_isolated_release_ms) * frame_rate / 1000.0)))
+
+    # Density tells us whether this frame belongs to a musical passage or to an
+    # otherwise silent gap.  The switch is intentionally soft (a threshold on a
+    # smoothed ratio), so a short note in a long rest is still audible, while
+    # the release after it is kept short.
+    density_frames = max(1, int(round(float(density_window_ms) * frame_rate / 1000.0)))
+    density = uniform_filter1d(active.astype(np.float64), size=density_frames,
+                               mode="nearest")
+    sustained = density >= float(density_min)
+    hold_curve = np.where(sustained, hold_frames, isolated_hold).astype(int)
+    release_curve = np.where(sustained, release_frames, isolated_release).astype(int)
+
+    frame_gain = np.zeros(len(active))
+    gain = 0.0
+    tonal_countdown = 0
+    since_active = max(int(hold_curve[0]), int(release_curve[0])) + 1
+    for i, is_active in enumerate(active):
+        if is_active:
+            since_active = 0
+            gain = min(1.0, gain + 1.0 / attack_frames)
+        else:
+            since_active += 1
+            if since_active > hold_curve[i]:
+                release = release_curve[i]
+                if tonal_countdown > 0 and not sustained[i]:
+                    release = tonal_release_frames
+                gain = max(0.0, gain - 1.0 / release)
+        if tonal_active[i]:
+            tonal_countdown = tonal_release_frames
+        elif tonal_countdown > 0:
+            tonal_countdown -= 1
+        frame_gain[i] = gain
+
+    # librosa.stft centres frame t at t * hop + n_fft / 2.
+    frame_times = np.arange(len(frame_gain)) * hop + n_fft // 2
+    frame_times = np.clip(frame_times, 0, n - 1)
+    envelope = np.interp(np.arange(n), frame_times, frame_gain,
+                         left=frame_gain[0], right=frame_gain[-1])
+    envelope = np.clip(envelope, 0.0, 1.0)
+
+    stats = {
+        "threshold_db": float(snr_threshold_db),
+        "hold_ms": float(hold_ms),
+        "release_ms": float(release_ms),
+        "isolated_hold_ms": float(isolated_hold_ms),
+        "isolated_release_ms": float(isolated_release_ms),
+        "tonal_isolated_release_ms": float(tonal_isolated_release_ms),
+        "median_snr_db": float(np.median(snr_db)),
+        "tonal_threshold_db": (None if tonal_snr_db is None
+                               else float(tonal_snr_db)),
+        "tonal_active_ratio": float(np.mean(tonal_active)),
+        "median_tonal_snr_db": (None if tonal_snr is None
+                                else float(np.median(tonal_snr))),
+        "active_ratio": float(np.mean(envelope > 1e-4)),
+        "muted_ratio": float(np.mean(envelope <= 1e-4)),
+        "frames": int(len(frame_gain)),
+    }
+    return envelope, stats
+
+
+def apply_envelope(audio: np.ndarray, envelope: np.ndarray) -> np.ndarray:
+    """Multiply every channel by a per-sample gain envelope."""
+    x = as_2d(audio)
+    env = np.asarray(envelope, dtype=np.float64).reshape(-1)
+    if env.size != len(x):
+        raise ValueError(f"envelope has {env.size} samples, audio has {len(x)}")
+    return x * env[:, None]
 
 
 # --------------------------------------------------------------------------- #

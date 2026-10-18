@@ -39,6 +39,7 @@ if str(ROOT) not in sys.path:
 
 from src import AudioQualityMetrics, AudioRestorer, RestorationConfig  # noqa: E402
 from src.restoration import SUBTYPES  # noqa: E402
+from src.vocals import AMOUNTS as VOCAL_AMOUNTS  # noqa: E402
 
 WEB_DIR = Path(__file__).resolve().parent
 JOBS_DIR = WEB_DIR / "jobs"
@@ -54,6 +55,11 @@ PRESETS = {
     "gentle": "Delicato",
     "strong": "Forte",
     "voice": "Voce",
+}
+VOCAL_MODES = {
+    "keep": "Mantieni la voce",
+    "reduce": "Riduci la voce",
+    "remove": "Rimuovi la voce",
 }
 MAX_UPLOAD_MB = 200
 JOB_TTL_SECONDS = 60 * 60
@@ -79,9 +85,11 @@ CARD_METRICS = (
 STAGE_LABELS = {
     "declip": "Declip",
     "hum": "Rimozione hum",
+    "vocals": "Gestione voce",
     "denoise": "Wiener denoise",
     "highpass": "High-pass",
     "eq": "EQ tonale",
+    "silence": "Pulizia silenzi",
     "compressor": "Compressione",
     "dither": "Dither",
 }
@@ -194,6 +202,7 @@ def index():
     return render_template(
         "index.html",
         presets=PRESETS,
+        vocal_modes=VOCAL_MODES,
         sample_name=SAMPLE_NAME,
         sample_available=sample_available,
         github_url=GITHUB_URL,
@@ -237,6 +246,11 @@ def restore():
     if preset not in PRESETS:
         return jsonify({"error": "Preset non valido."}), 400
 
+    vocals_mode = request.form.get("vocals", "keep")
+    if vocals_mode not in VOCAL_AMOUNTS:
+        return jsonify({"error": "Modalità voce non valida."}), 400
+    clean_silence = request.form.get("clean_silence", "1") in {"1", "true", "on", "yes"}
+
     original_name = _display_name(upload.filename)
     suffix = Path(original_name).suffix.lower() or ".audio"
     job_id = uuid.uuid4().hex
@@ -250,7 +264,10 @@ def restore():
             raise ValueError("Il file caricato è vuoto.")
         audio, sr = _load_audio(source)
 
-        config = RestorationConfig.from_preset(preset, bit_depth=24)
+        config = RestorationConfig.from_preset(
+            preset, bit_depth=24, vocals=vocals_mode,
+            clean_silence=clean_silence,
+        )
         restorer = AudioRestorer(config=config, verbose=False)
         restored, report = restorer.restore_array(audio, sr, config)
         output_sr = int(report.get("sample_rate", sr))
@@ -290,6 +307,9 @@ def restore():
             "elapsed_s": _finite(report.get("elapsed_s")),
             "preset": preset,
             "preset_label": PRESETS[preset],
+            "vocals": vocals_mode,
+            "vocals_label": VOCAL_MODES[vocals_mode],
+            "clean_silence": clean_silence,
             "metrics": cards,
             "stages": _stage_list(report),
             "report": report,

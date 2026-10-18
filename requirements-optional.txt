@@ -9,5 +9,12 @@ torchaudio>=2.0.0
 audiocraft>=1.0.0
 tqdm>=4.65.0
 
+# Optional true vocal separation for the "Rimuovi / Riduci voce" modes.
+# Without it, stereo files fall back to mid/side reduction.
+demucs>=4.0.0
+
+# Tests only.
+pytest>=8.0.0
+
 # Optional download helper for scripts/download_test_samples.py
 yt-dlp>=2023.12.30

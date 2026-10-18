@@ -29,9 +29,23 @@ The important design choices are:
 - **Preserve the source format.** Sample rate and channel layout are kept by
   default (MusicGen outputs 32 kHz); the old code silently forced 44.1 kHz mono.
 - **Remove noise, not music.** Noise is estimated per frequency bin from quiet
-  frames, and the gain floor is shallower in the low band than above 1 kHz.
+  frames, the gain floor is shallow in the low band (where the music lives) and
+  strict above 4 kHz (where hiss and codec noise live), and a perceptual gate
+  driven by the smoothed posterior SNR closes the bins that the Wiener gain
+  leaves open after a loud passage.
 - **Protect transients.** Spectral onsets temporarily raise the gain so drum and
-  piano attacks are not softened.
+  piano attacks are not softened. The boost is weighted by the posterior SNR, so
+  an onset cannot reopen a bin that contains nothing but noise.
+- **Let the user decide about the voice.** `keep`, `reduce` and `remove` map to
+  0 %, 55 % and 130 % of a Demucs vocal stem. The over-subtraction in `remove`
+  cancels the small amount of voice that Demucs leaves in the other stems.
+- **Clean noise-only silence.** A separate gate zeroes frames whose broadband
+  energy is below the estimated noise floor, in every preset. Sustained musical
+  passages keep the full hold/release, so note tails decay naturally; isolated
+  clicks and background words get a much shorter fade instead of becoming half
+  a second of residual noise. A per-bin tonal detector also keeps a piano or
+  guitar note open while its harmonics are still above the floor, even after
+  the broadband level has fallen below the gate threshold.
 - **Measure every claim.** The demo and evaluation scripts report SI-SDR, SNR,
   segmental SNR, LSD and reference-free descriptors with explicit directions.
 - **Be honest about the result.** This is a post-processor, not a neural
@@ -52,8 +66,10 @@ pip install -r requirements.txt
 ```
 
 `requirements.txt` contains only the five core packages. Install
-`requirements-optional.txt` for PESQ/STOI and the MusicGen/download helpers; the
-evaluation CLI automatically omits PESQ and STOI when they are not installed.
+`requirements-optional.txt` for PESQ/STOI, Demucs vocal separation, and the
+MusicGen/download helpers; the evaluation CLI automatically omits PESQ and STOI
+when they are not installed. Without Demucs the vocal modes still work on stereo
+files through the mid/side fallback, but separation is much less precise.
 
 ### Web demo
 
@@ -67,6 +83,15 @@ AIFF and other formats, restores the upload and plays the original and the
 restored version side by side. The result is also available as a 24-bit WAV
 download. The included example `examples/demo_dirty.wav` is the degraded clip
 from `scripts/make_demo.py`, so no external audio download is required.
+
+The page exposes two independent choices:
+
+- **Voce nella traccia** — `Mantieni`, `Riduci` or `Rimuovi`. Choose `Rimuovi`
+  when the voice is only background or when you want an instrumental. Demucs is
+  used when installed; otherwise stereo files fall back to mid/side reduction.
+- **Pulisci i momenti di solo rumore** — on by default and applied in every
+  preset. Noise-only frames become exact digital zeros; note tails are kept and
+  fade, while isolated blips use a short fade.
 
 Uploads are stored temporarily in `webdemo/jobs/` and deleted after one hour.
 Set `PORT` or `HOST` to change the bind address, e.g. `PORT=8000 python app.py`.
@@ -130,28 +155,41 @@ and STOI.
 
 ## Measured Results
 
-All numbers below were produced by the code in this repository. Lower-is-better
-metrics are marked with `↓`, higher-is-better with `↑`.
+Unless marked otherwise, the numbers below were produced by the code in this
+repository. Lower-is-better metrics are marked with `↓`, higher-is-better with
+`↑`.
 
 ### Synthetic demo (`python scripts/make_demo.py`, default `music` preset)
 
 | Metric | Degraded | Restored | Change |
 |---|---:|---:|---:|
-| SI-SDR ↑ | 11.82 dB | **16.88 dB** | **+5.06 dB** |
-| SNR ↑ | 12.03 dB | **16.95 dB** | **+4.92 dB** |
-| Segmental SNR ↑ | 0.44 dB | **4.86 dB** | **+4.42 dB** |
-| LSD ↓ | 38.42 dB | **31.29 dB** | **−7.13 dB** |
-| Noise floor ↓ | −28.93 dBFS | **−37.25 dBFS** | **−8.32 dB** |
+| SI-SDR ↑ | 11.82 dB | **19.84 dB** | **+8.02 dB** |
+| SNR ↑ | 12.03 dB | **19.87 dB** | **+7.84 dB** |
+| Segmental SNR ↑ | 0.44 dB | **9.90 dB** | **+9.47 dB** |
+| LSD ↓ | 38.42 dB | **8.83 dB** | **−29.59 dB** |
+| Noise floor ↓ | −28.93 dBFS | **−64.65 dBFS** | **−35.72 dB** |
 | Clipping ↓ | 0.114 % | **0.000 %** | repaired |
-| Spectral flatness ↓ | 0.318 | **0.205** | less noisy |
+| Spectral flatness ↓ | 0.318 | **0.0004** | matches the 0.0005 of the clean reference |
 | True peak (neutral) | +0.25 dBTP | −1.00 dBTP | limited |
-| Integrated loudness (neutral) | −18.09 LUFS | −15.96 LUFS | not normalized to a target |
+| Integrated loudness (neutral) | −18.09 LUFS | −15.81 LUFS | not normalized to a target |
 
 The demo also confirms that the restoration preserves the 32 kHz sample rate,
 removes all flat-topped clipping runs, and reports a positive limiter reduction
 instead of a negative "improvement".
 
+The residual is not just low on average: on the 5 % quietest frames of the clean
+reference (whose own level is −55.8 dBFS) the degraded input sits 26.9 dB
+*above* the reference while the restored output sits 7.1 dB *below* it, i.e. the
+noise is gone rather than merely buried. In the quietest second of the restored
+demo the 1–16 kHz residue sits around −107 dBFS, roughly 65 dB below the music,
+and the sub-bass shoulder is at −78 dBFS.
+
 ### Real-music stress test (4 excerpts, 20 s each)
+
+> These numbers were measured with the previous tuning. The denoiser in the
+> current revision uses a stricter noise estimate and the new SNR gate, so
+> re-running `scripts/evaluate.py` on your own excerpts will give different
+> (typically lower-residue) values.
 
 Degradation: 12 dB SNR broadband hiss, 8-bit quantization and an 8 kHz band
 limit. The clean excerpt was the decoded source; the default `music` preset was
@@ -181,13 +219,18 @@ input
   │
   ├─ declip (short flat-topped runs only, optional)
   ├─ mains-hum detection and notching (optional)
+  ├─ vocal handling: keep / reduce / remove (Demucs, optional)
+  ├─ noise-only detector (runs on the optionally vocal-free signal)
   ├─ decision-directed Wiener denoising
-  │     per-bin noise estimate, transient protection, frequency-dependent floor
+  │     per-bin noise estimate, transient protection, frequency-dependent
+  │     floor, smoothed-SNR noise gate
   ├─ high-pass (optional; 80 Hz for the voice preset)
   ├─ tonal EQ: low shelf, presence peak, air shelf (optional)
+  ├─ silence gate: exact zeros for noise-only frames, short fade for blips
   ├─ feed-forward compressor (optional; voice preset)
   ├─ loudness target + look-ahead limiter (optional; -1 dBTP ceiling)
-  └─ TPDF dither only when writing 16-bit PCM
+  ├─ TPDF dither only when writing 16-bit PCM
+  └─ silence gate re-applied so muted regions stay exact zeros
 output: same sample rate and channel layout as the input
 ```
 
@@ -204,10 +247,19 @@ harmonic lines and percussion hits remain visible.*
 
 | Preset | Intended use | Main differences |
 |---|---|---|
-| `music` | Default for MusicGen instrumental output | balanced denoising, subtle EQ, no loudness target |
-| `gentle` | Already-clean or valuable sources | 55 % denoise strength, shallow floors, minimal EQ |
-| `strong` | Noisy, hissy or low-bitrate sources | deeper high-band floor, stronger shelves; may soften dense mixes |
-| `voice` | Speech and podcasts | 80 Hz high-pass, compression, hum removal, −16 LUFS target |
+| `music` | Default for MusicGen instrumental output | balanced denoising, silence gate at 4.5 dB, subtle EQ, no loudness target |
+| `gentle` | Already-clean or valuable sources | 55 % denoise strength, shallow floors, silence gate at 6 dB, minimal EQ |
+| `strong` | Noisy, hissy or low-bitrate sources | deeper low-band floor, silence gate at 5 dB (more aggressive than `music`), stronger shelves |
+| `voice` | Speech and podcasts | 80 Hz high-pass, silence gate at 4.5 dB, compression, hum removal, −16 LUFS target |
+
+In every preset `clean_silence=True` by default. The gate uses a 200–300 ms
+hold and a smooth release for sustained music; isolated blips get a 40/60 ms
+hold/release so they disappear instead of being stretched into residual noise.
+The per-bin tonal detector uses `silence_tonal_snr_db=14` in every preset (white
+and pink noise stay around 3 dB, so they are still muted); set it to `None` to
+disable it. Isolated tonal events use a 250 ms fade
+(`silence_tonal_isolated_release_ms`) instead of the 60 ms blip fade, so a single
+quiet piano note still rings out.
 
 Use `--strength`, `--highpass`, `--target-lufs`, `--no-denoise`, `--no-declip`,
 `--no-eq` and `--no-normalize` to override a preset from the CLI.
@@ -247,6 +299,10 @@ config = RestorationConfig.from_preset(
     denoise_strength=0.8,
     target_lufs=-16.0,
     true_peak_db=-1.0,
+    vocals="remove",       # keep / reduce / remove
+    clean_silence=True,    # exact zeros in noise-only frames
+    silence_tonal_snr_db=14.0,  # keep quiet harmonic note tails
+    silence_tonal_isolated_release_ms=250.0,  # ring-out for single notes
 )
 restorer = AudioRestorer(config=config)
 ```
@@ -273,7 +329,9 @@ still available as compatibility aliases, but new code should use
 | `--target-lufs` | Optional loudness target, e.g. `-14` or `-16` |
 | `--true-peak-db` | Limiter ceiling (default `-1.0`) |
 | `--highpass` | High-pass cutoff in Hz |
+| `--vocals` | `keep`, `reduce` or `remove` the Demucs vocal stem |
 | `--hum` / `--no-hum` | Force or disable mains-hum removal |
+| `--no-silence-clean` | Disable the noise-only gate |
 | `--no-denoise`, `--no-declip`, `--no-eq`, `--no-normalize` | Disable a stage |
 | `--suffix` | Prefix of output filenames (default `restored_`) |
 | `--report` | JSON report path |
@@ -342,10 +400,13 @@ lower-is-better change is never presented as an improvement.
 │   └── static/                      # CSS and JavaScript
 ├── src/
 │   ├── __init__.py                  # Public, lazily imported API
-│   ├── dsp.py                       # STFT denoiser, filters, limiter, dither
+│   ├── dsp.py                       # STFT denoiser, filters, silence gate, limiter
 │   ├── restoration.py               # AudioRestorer + presets + CLI
+│   ├── vocals.py                    # Optional Demucs / mid-side vocal handling
 │   ├── metrics.py                   # Reference-based and reference-free metrics
 │   └── demo.py                      # Synthetic music generator and corruption
+├── tests/
+│   └── test_silence.py              # Gate, exact zeros and preset defaults
 ├── scripts/
 │   ├── restore_audio.py             # Batch/single-file restoration CLI
 │   ├── restore_audio                # Compatibility wrapper
@@ -366,6 +427,10 @@ lower-is-better change is never presented as an improvement.
 - The denoiser assumes that the quietest frames are a reasonable estimate of
   stationary noise. Strongly non-stationary noise (traffic, audience, overlapping
   speech) is only partially attenuated.
+- Background speech is not the same as a sung vocal stem. Demucs handles the
+  latter well; distant chatter that the model classifies as `other` can survive
+  `vocals="remove"`. The silence gate shortens isolated blips, but the clean
+  solution is a source where the background is actually silent.
 - Declipping repairs short flat-topped runs (up to 8 ms and 5 % of samples).
   Heavily clipped audio is left untouched because interpolation would invent
   content.
@@ -404,6 +469,7 @@ python scripts/evaluate.py --original_dir data/dirty --restored_dir restored/ \
 You can also run the small self-tests without any files:
 
 ```bash
+python -m pytest -q
 python -m src.metrics
 python -m src.restoration --help
 ```

@@ -37,7 +37,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from . import dsp
+from . import dsp, vocals
 
 SUBTYPES = {16: "PCM_16", 24: "PCM_24", 32: "FLOAT"}
 
@@ -52,11 +52,35 @@ class RestorationConfig:
     preset: str = "music"
     denoise: bool = True
     denoise_strength: float = 1.0
-    noise_percentile: float = 15.0
-    noise_bias: float = 2.0
-    floor_low_db: float = -8.0
-    floor_high_db: float = -22.0
+    noise_percentile: float = 10.0
+    noise_bias: float = 9.5
+    floor_low_db: float = -18.0
+    floor_high_db: float = -80.0
     transient_protection: float = 0.5
+    noise_gate: float = 1.0
+
+    # Noise-only cleanup: frames whose broadband SNR is under the threshold are
+    # muted, with a hold/fade so note tails can decay instead of being clipped.
+    # Isolated blips use a much shorter hold/release than sustained music.
+    clean_silence: bool = True
+    silence_snr_db: float = 4.5
+    silence_hold_ms: float = 250.0
+    silence_release_ms: float = 220.0
+    silence_density_window_ms: float = 1500.0
+    silence_density_min: float = 0.20
+    silence_isolated_hold_ms: float = 40.0
+    silence_isolated_release_ms: float = 60.0
+    # Per-bin tonal SNR that also counts as musical activity.  This keeps the
+    # quiet tail of a piano/guitar note open after its broadband level has
+    # fallen near the noise floor.  ``None`` disables the tonal detector.
+    silence_tonal_snr_db: float | None = 14.0
+    # Isolated tonal notes get a longer fade than broadband clicks, so a single
+    # quiet piano note still rings out instead of stopping at the blip fade.
+    silence_tonal_isolated_release_ms: float = 250.0
+
+    # Vocal handling: "keep", "reduce" or "remove".  Applied before denoising
+    # so the silence detector sees the remaining instrumental content.
+    vocals: str = "keep"
 
     declip: bool = True
     clip_threshold: float = 0.999
@@ -96,9 +120,28 @@ class RestorationConfig:
         self.denoise_strength = float(np.clip(self.denoise_strength, 0.0, 1.5))
         self.noise_percentile = float(np.clip(self.noise_percentile, 1.0, 50.0))
         self.noise_bias = float(np.clip(self.noise_bias, 0.5, 10.0))
-        self.floor_low_db = float(np.clip(self.floor_low_db, -40.0, 0.0))
-        self.floor_high_db = float(np.clip(self.floor_high_db, -60.0, 0.0))
+        self.floor_low_db = float(np.clip(self.floor_low_db, -60.0, 0.0))
+        self.floor_high_db = float(np.clip(self.floor_high_db, -120.0, 0.0))
         self.transient_protection = float(np.clip(self.transient_protection, 0.0, 1.0))
+        self.noise_gate = float(np.clip(self.noise_gate, 0.0, 1.0))
+        self.silence_snr_db = float(np.clip(self.silence_snr_db, 0.0, 20.0))
+        self.silence_hold_ms = float(np.clip(self.silence_hold_ms, 0.0, 2000.0))
+        self.silence_release_ms = float(np.clip(self.silence_release_ms, 20.0, 2000.0))
+        self.silence_density_window_ms = float(
+            np.clip(self.silence_density_window_ms, 100.0, 5000.0))
+        self.silence_density_min = float(np.clip(self.silence_density_min, 0.0, 1.0))
+        self.silence_isolated_hold_ms = float(
+            np.clip(self.silence_isolated_hold_ms, 0.0, 500.0))
+        self.silence_isolated_release_ms = float(
+            np.clip(self.silence_isolated_release_ms, 10.0, 1000.0))
+        if self.silence_tonal_snr_db is not None:
+            self.silence_tonal_snr_db = float(
+                np.clip(self.silence_tonal_snr_db, 0.0, 40.0))
+        self.silence_tonal_isolated_release_ms = float(
+            np.clip(self.silence_tonal_isolated_release_ms, 10.0, 1000.0))
+        self.vocals = str(self.vocals).lower()
+        if self.vocals not in vocals.AMOUNTS:
+            self.vocals = "keep"
         self.bit_depth = int(self.bit_depth if self.bit_depth in SUBTYPES else 24)
         if self.target_lufs is not None:
             self.target_lufs = float(np.clip(self.target_lufs, -40.0, -5.0))
@@ -120,11 +163,18 @@ PRESETS: dict[str, dict[str, Any]] = {
     # Balanced default for MusicGen-style instrumental output.
     "music": {
         "denoise_strength": 1.0,
-        "noise_percentile": 15.0,
-        "noise_bias": 2.0,
-        "floor_low_db": -8.0,
-        "floor_high_db": -22.0,
+        "noise_percentile": 10.0,
+        "noise_bias": 9.5,
+        "floor_low_db": -18.0,
+        "floor_high_db": -80.0,
         "transient_protection": 0.5,
+        "noise_gate": 1.0,
+        "clean_silence": True,
+        "silence_snr_db": 4.5,
+        "silence_hold_ms": 250.0,
+        "silence_release_ms": 220.0,
+        "silence_tonal_snr_db": 14.0,
+        "vocals": "keep",
         "highpass_hz": 0.0,
         "low_shelf_db": -0.5,
         "presence_db": 0.8,
@@ -136,10 +186,17 @@ PRESETS: dict[str, dict[str, Any]] = {
     "gentle": {
         "denoise_strength": 0.55,
         "noise_percentile": 10.0,
-        "noise_bias": 1.7,
-        "floor_low_db": -6.0,
-        "floor_high_db": -14.0,
+        "noise_bias": 5.5,
+        "floor_low_db": -10.0,
+        "floor_high_db": -32.0,
         "transient_protection": 0.6,
+        "noise_gate": 0.3,
+        "clean_silence": True,
+        "silence_snr_db": 6.0,
+        "silence_hold_ms": 300.0,
+        "silence_release_ms": 260.0,
+        "silence_tonal_snr_db": 14.0,
+        "vocals": "keep",
         "highpass_hz": 0.0,
         "low_shelf_db": -0.3,
         "presence_db": 0.4,
@@ -150,11 +207,20 @@ PRESETS: dict[str, dict[str, Any]] = {
     # For noisy, hissy or low-bitrate sources.  May soften dense mixes.
     "strong": {
         "denoise_strength": 1.0,
-        "noise_percentile": 15.0,
-        "noise_bias": 2.0,
-        "floor_low_db": -10.0,
-        "floor_high_db": -26.0,
+        "noise_percentile": 8.0,
+        "noise_bias": 10.0,
+        "floor_low_db": -24.0,
+        "floor_high_db": -80.0,
         "transient_protection": 0.5,
+        "noise_gate": 1.0,
+        "clean_silence": True,
+        # Higher than the balanced preset: "strong" must close the gate more
+        # often, not less.  The old 2.5 dB value kept background words alive.
+        "silence_snr_db": 5.0,
+        "silence_hold_ms": 200.0,
+        "silence_release_ms": 180.0,
+        "silence_tonal_snr_db": 14.0,
+        "vocals": "keep",
         "highpass_hz": 0.0,
         "low_shelf_db": -0.8,
         "presence_db": 1.0,
@@ -165,11 +231,18 @@ PRESETS: dict[str, dict[str, Any]] = {
     # Speech / podcast: more low-cut, gentle compression, -16 LUFS.
     "voice": {
         "denoise_strength": 1.15,
-        "noise_percentile": 18.0,
-        "noise_bias": 2.0,
-        "floor_low_db": -12.0,
-        "floor_high_db": -26.0,
+        "noise_percentile": 12.0,
+        "noise_bias": 8.0,
+        "floor_low_db": -20.0,
+        "floor_high_db": -60.0,
         "transient_protection": 0.35,
+        "noise_gate": 0.6,
+        "clean_silence": True,
+        "silence_snr_db": 4.5,
+        "silence_hold_ms": 180.0,
+        "silence_release_ms": 150.0,
+        "silence_tonal_snr_db": 14.0,
+        "vocals": "keep",
         "highpass_hz": 80.0,
         "low_shelf_db": -2.5,
         "low_shelf_hz": 180.0,
@@ -258,6 +331,33 @@ class AudioRestorer:
             if hum:
                 x = dsp.remove_hum(x, sr, hum)
 
+        if cfg.vocals != "keep":
+            if self._log_enabled:
+                print(f"  Vocal handling ({cfg.vocals})...")
+            x, vocal_stats = vocals.suppress_vocals(x, sr, mode=cfg.vocals)
+            report["stages"]["vocals"] = vocal_stats
+
+        # The detector runs on the (optionally vocal-free) input, before the
+        # denoiser changes the noise floor.  It is applied after the EQ so that
+        # filter state cannot ring back into a muted section.
+        silence_env = None
+        if cfg.clean_silence:
+            silence_env, silence_stats = dsp.silence_envelope(
+                x, sr,
+                percentile=cfg.noise_percentile,
+                bias=cfg.noise_bias,
+                snr_threshold_db=cfg.silence_snr_db,
+                hold_ms=cfg.silence_hold_ms,
+                release_ms=cfg.silence_release_ms,
+                density_window_ms=cfg.silence_density_window_ms,
+                density_min=cfg.silence_density_min,
+                isolated_hold_ms=cfg.silence_isolated_hold_ms,
+                isolated_release_ms=cfg.silence_isolated_release_ms,
+                tonal_snr_db=cfg.silence_tonal_snr_db,
+                tonal_isolated_release_ms=cfg.silence_tonal_isolated_release_ms,
+            )
+            report["stages"]["silence"] = silence_stats
+
         if cfg.denoise and cfg.denoise_strength > 0:
             if self._log_enabled:
                 n = len(x) / float(sr)
@@ -268,6 +368,8 @@ class AudioRestorer:
                 "percentile": cfg.noise_percentile,
                 "bias": cfg.noise_bias,
                 "floor_db": [cfg.floor_low_db, cfg.floor_high_db],
+                "gate": cfg.noise_gate,
+                "protect": cfg.transient_protection,
                 "blocks": blocks,
             }
 
@@ -288,6 +390,11 @@ class AudioRestorer:
                 "presence_db": cfg.presence_db,
                 "air_db": cfg.air_db,
             }
+
+        if silence_env is not None:
+            # Gate before the compressor so noise-only frames cannot trigger
+            # gain reduction on the musical content.
+            x = dsp.apply_envelope(x, silence_env)
 
         if cfg.compress:
             x = dsp.compress(
@@ -326,6 +433,11 @@ class AudioRestorer:
         if cfg.bit_depth <= 16:
             x = dsp.dither(x, bits=cfg.bit_depth, seed=cfg.seed)
             report["stages"]["dither"] = {"bits": cfg.bit_depth, "type": "TPDF"}
+
+        if silence_env is not None:
+            # Re-apply after dithering so the muted regions are exact digital
+            # zeros, not a 1-LSB noise floor.
+            x = dsp.apply_envelope(x, silence_env)
 
         x = np.clip(x, -1.0, 1.0)
         report["loudness"]["true_peak_after_db"] = self._finite(dsp.true_peak_db(x, sr))
@@ -419,6 +531,7 @@ class AudioRestorer:
                 floor_low_db=cfg.floor_low_db,
                 floor_high_db=cfg.floor_high_db,
                 protect=cfg.transient_protection,
+                gate=cfg.noise_gate,
             ), 1
 
         fade = min(int(0.5 * sr), block // 4)
@@ -434,6 +547,7 @@ class AudioRestorer:
                 floor_low_db=cfg.floor_low_db,
                 floor_high_db=cfg.floor_high_db,
                 protect=cfg.transient_protection,
+                gate=cfg.noise_gate,
             )
             if first:
                 out[start:end] = clean
@@ -486,6 +600,9 @@ def main() -> None:
     parser.add_argument("--bit-depth", type=int, default=24, choices=[16, 24, 32])
     parser.add_argument("--no-denoise", action="store_true")
     parser.add_argument("--no-declip", action="store_true")
+    parser.add_argument("--vocals", default="keep",
+                        choices=["keep", "reduce", "remove"])
+    parser.add_argument("--no-silence-clean", action="store_true")
     parser.add_argument("--report", default=None)
     args = parser.parse_args()
 
@@ -495,6 +612,8 @@ def main() -> None:
         verbose=True,
         denoise=not args.no_denoise,
         declip=not args.no_declip,
+        vocals=args.vocals,
+        clean_silence=not args.no_silence_clean,
         bit_depth=args.bit_depth,
     )
     report = restorer.restore_file(args.input, args.output)
